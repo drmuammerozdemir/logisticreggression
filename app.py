@@ -36,9 +36,32 @@ def read_any(file):
     if name.endswith(".xlsx") or name.endswith(".xls"):
         return pd.read_excel(file)
     if name.endswith(".sav"):
+        # Streamlit UploadedFile bir yol (path) değildir; pyreadstat path bekler.
+        # BytesIO üzerinden okuyoruz (veya gerekirse temp dosyaya yazıp okuruz).
         if not HAS_PYREADSTAT:
             st.error(".sav dosyası için 'pyreadstat' gerekir. Lütfen 'pip install pyreadstat' kurun.")
             st.stop()
+        try:
+            file.seek(0)
+            buffer = io.BytesIO(file.read())
+            df, meta = pyreadstat.read_sav(buffer)
+            return df
+        except Exception as e:
+            # Alternatif: geçici dosyaya yazıp path üzerinden dene
+            import tempfile, os
+            try:
+                file.seek(0)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".sav") as tmp:
+                    tmp.write(file.read())
+                    tmp_path = tmp.name
+                df, meta = pyreadstat.read_sav(tmp_path)
+                os.unlink(tmp_path)
+                return df
+            except Exception as e2:
+                st.error(f".sav okunamadı: {e2}")
+                st.stop()
+    st.error("Desteklenmeyen dosya türü. CSV/XLSX/SAV yükleyin.")
+    st.stop()
         df, meta = pyreadstat.read_sav(file)
         return df
     st.error("Desteklenmeyen dosya türü. CSV/XLSX/SAV yükleyin.")
