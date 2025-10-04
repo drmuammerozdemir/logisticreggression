@@ -36,8 +36,7 @@ def read_any(file):
     if name.endswith(".xlsx") or name.endswith(".xls"):
         return pd.read_excel(file)
     if name.endswith(".sav"):
-        # Streamlit UploadedFile bir yol (path) değildir; pyreadstat path bekler.
-        # BytesIO üzerinden okuyoruz (veya gerekirse temp dosyaya yazıp okuruz).
+        # Streamlit UploadedFile path değildir; pyreadstat BytesIO üzerinden okunur
         if not HAS_PYREADSTAT:
             st.error(".sav dosyası için 'pyreadstat' gerekir. Lütfen 'pip install pyreadstat' kurun.")
             st.stop()
@@ -46,8 +45,7 @@ def read_any(file):
             buffer = io.BytesIO(file.read())
             df, meta = pyreadstat.read_sav(buffer)
             return df
-        except Exception as e:
-            # Alternatif: geçici dosyaya yazıp path üzerinden dene
+        except Exception:
             import tempfile, os
             try:
                 file.seek(0)
@@ -62,11 +60,6 @@ def read_any(file):
                 st.stop()
     st.error("Desteklenmeyen dosya türü. CSV/XLSX/SAV yükleyin.")
     st.stop()
-        df, meta = pyreadstat.read_sav(file)
-        return df
-    st.error("Desteklenmeyen dosya türü. CSV/XLSX/SAV yükleyin.")
-    st.stop()
-
 
 def is_binary_series(s: pd.Series) -> bool:
     vals = s.dropna().unique()
