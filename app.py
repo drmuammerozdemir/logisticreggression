@@ -12,6 +12,7 @@ import streamlit as st
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from sklearn.metrics import roc_auc_score, confusion_matrix, roc_curve
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 from delong import delong_ci, delong_roc_test
 
 # Görselleştirme
@@ -273,6 +274,34 @@ if mode == "Binary (Logistic)":
             st.write(f"**Hosmer–Lemeshow**: χ² = {chi_hl:.3f}, p = {p_hl:.3f}")
             with st.expander("HL Grup Tablosu"):
                 st.dataframe(tbl_hl)
+                
+                        # ===== VIF (multicollinearity) =====
+            try:
+                exog = res_m.model.exog
+                names = res_m.model.exog_names  # örn. ['Intercept','TRP','C(var)[T.lv]']
+                vif_rows = []
+                for i, nm in enumerate(names):
+                    if nm.lower().startswith("intercept"):
+                        continue  # sabiti at
+                    try:
+                        vif_val = variance_inflation_factor(exog, i)
+                        vif_rows.append({"Variable": nm, "VIF": float(vif_val), "Tolerance": float(1.0/vif_val)})
+                    except Exception:
+                        vif_rows.append({"Variable": nm, "VIF": np.nan, "Tolerance": np.nan})
+                vif_df = pd.DataFrame(vif_rows).sort_values("VIF", na_position="last")
+                # görsel vurgu: VIF>5 kalın
+                def _style_vif(v):
+                    try:
+                        return "font-weight:bold;" if float(v) > 5 else ""
+                    except:
+                        return ""
+                st.subheader("📎 Kolinearite Kontrolü (VIF)")
+                st.dataframe(vif_df.style.applymap(_style_vif, subset=["VIF"]), use_container_width=True)
+                st.caption("Not: VIF>5 (bazı kılavuzlarda >10) yüksek kolinearite olarak yorumlanır.")
+                st.download_button("VIF (CSV)", vif_df.to_csv(index=False).encode("utf-8"),
+                                   file_name="vif_model1.csv", mime="text/csv")
+            except Exception as e:
+                st.warning(f"VIF hesaplanamadı: {e}")
 
             # ROC (TEK KERE)
             fpr, tpr, thr = roc_curve(y_true, y_prob)
