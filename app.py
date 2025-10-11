@@ -1,6 +1,6 @@
 # ============================================================
 # 🔬 Binary (Logistic) + Continuous (Linear) Regression Toolkit
-# Univariate tarama + Multivariate model + (Binary) ROC–AUC & Youden cut-off
+# Univariate tarama + Multivariate model + (Binary) ROC–AUC, Youden cut-off, DeLong testi
 # ============================================================
 
 import io
@@ -100,7 +100,7 @@ def extract_or_table(res):
 
 def make_confusion(y_true, y_prob, threshold=0.5):
     y_pred = (y_prob >= threshold).astype(int)
-    cm = confusion_matrix(y_true, y_pred, labels=[0,1])
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
     acc = (tp + tn) / cm.sum()
     sens = tp / (tp + fn) if (tp + fn) else np.nan
@@ -108,12 +108,11 @@ def make_confusion(y_true, y_prob, threshold=0.5):
     prev = np.mean(y_true)
     ppv = (sens*prev) / (sens*prev + (1-spec)*(1-prev)) if not (np.isnan(sens) or np.isnan(spec)) else np.nan
     npv = (spec*(1-prev)) / ((1-sens)*prev + spec*(1-prev)) if not (np.isnan(sens) or np.isnan(spec)) else np.nan
-    lr_pos = sens / (1-spec) if (1-spec)>0 else np.nan
-    lr_neg = (1-sens) / spec if spec>0 else np.nan
+    lr_pos = sens / (1-spec) if (1-spec) > 0 else np.nan
+    lr_neg = (1-sens) / spec if spec > 0 else np.nan
     return cm, acc, sens, spec, ppv, npv, lr_pos, lr_neg
 
 def compute_youden(fpr, tpr, thr):
-    # J = tpr - fpr
     j = tpr - fpr
     idx = int(np.argmax(j))
     return {
@@ -127,7 +126,7 @@ def compute_youden(fpr, tpr, thr):
 def hosmer_lemeshow(y_true, y_prob, g=10):
     data = pd.DataFrame({"y": y_true, "p": y_prob}).sort_values("p").reset_index(drop=True)
     data["group"] = pd.qcut(data["p"], q=g, duplicates='drop')
-    tbl = data.groupby("group").agg(n=("y","size"), obs=("y","sum"), p_mean=("p","mean"))
+    tbl = data.groupby("group").agg(n=("y", "size"), obs=("y", "sum"), p_mean=("p", "mean"))
     tbl["exp"] = tbl["n"] * tbl["p_mean"]
     tbl["chi"] = (tbl["obs"] - tbl["exp"])**2 / (tbl["exp"] * (1 - tbl["p_mean"]).clip(lower=1e-12))
     chi2 = tbl["chi"].sum()
@@ -139,7 +138,7 @@ def hosmer_lemeshow(y_true, y_prob, g=10):
 # ===================== 1) Veri Yükleme ===================== #
 
 st.sidebar.header("1) Veri Yükle")
-file = st.sidebar.file_uploader("CSV / XLSX / SAV yükleyin", type=["csv","xlsx","xls","sav"])
+file = st.sidebar.file_uploader("CSV / XLSX / SAV yükleyin", type=["csv", "xlsx", "xls", "sav"])
 if not file:
     st.info("Başlamak için bir veri dosyası yükleyin.")
     st.stop()
@@ -158,7 +157,7 @@ if mode == "Binary (Logistic)":
     # DV seçimi
     dv = st.sidebar.selectbox("Bağımlı Değişken (Binary)", options=all_cols)
     unique_vals = df[dv].dropna().unique().tolist()
-    map_needed = not (set(unique_vals) <= {0,1})
+    map_needed = not (set(unique_vals) <= {0, 1})
     if map_needed:
         st.sidebar.markdown("**Pozitif sınıfı seçin (1):**")
         pos_label = st.sidebar.selectbox("Pozitif sınıf (1)", options=sorted(unique_vals, key=str))
@@ -176,8 +175,11 @@ if mode == "Binary (Logistic)":
 
     # Kategorikler
     st.sidebar.header("3) Kategorik Tanımları")
-    cat_vars = st.sidebar.multiselect("Kategorik değişkenler (varsa)", options=ivs,
-                                      default=[c for c in ivs if df[c].dtype == 'object'])
+    cat_vars = st.sidebar.multiselect(
+        "Kategorik değişkenler (varsa)",
+        options=ivs,
+        default=[c for c in ivs if df[c].dtype == 'object']
+    )
     cat_ref = {}
     for c in cat_vars:
         levels = sorted([str(x) for x in pd.Series(df[c]).dropna().unique()])
@@ -216,12 +218,16 @@ if mode == "Binary (Logistic)":
                 "AIC": res.aic,
                 "BIC": res.bic
             })
-        except Exception as e:
+        except Exception:
             uni_rows.append({"değişken": var, "OR (95% GA)": "NA", "p": np.nan, "AIC": np.nan, "BIC": np.nan})
     uni_df = pd.DataFrame(uni_rows).sort_values("p", na_position='last')
     st.dataframe(uni_df, use_container_width=True)
-    st.download_button("Univariate (CSV)", uni_df.to_csv(index=False).encode("utf-8"),
-                       file_name="univariate_logit.csv", mime="text/csv")
+    st.download_button(
+        "Univariate (CSV)",
+        uni_df.to_csv(index=False).encode("utf-8"),
+        file_name="univariate_logit.csv",
+        mime="text/csv"
+    )
 
     # Aday seçimi
     st.subheader("Univariate'e göre Multivariate aday seçimi")
@@ -238,11 +244,13 @@ if mode == "Binary (Logistic)":
             st.code(fml_multi)
         try:
             model_m, res_m = fit_logit(fml_multi, work)
+
             # Katsayılar
             multi_tab = extract_or_table(res_m)
             multi_tab["OR (95% GA)"] = multi_tab.apply(
                 lambda r: format_or_ci(np.exp(r["coef"]), np.exp(r["ci_low"]), np.exp(r["ci_high"]))
-                if pd.notna(r["coef"]) else "NA", axis=1)
+                if pd.notna(r["coef"]) else "NA", axis=1
+            )
             pretty = multi_tab[["variable", "OR (95% GA)", "p"]].copy()
             st.subheader("Model Katsayıları")
             st.dataframe(pretty, use_container_width=True)
@@ -266,25 +274,13 @@ if mode == "Binary (Logistic)":
             with st.expander("HL Grup Tablosu"):
                 st.dataframe(tbl_hl)
 
-            # ROC
+            # ROC (TEK KERE)
             fpr, tpr, thr = roc_curve(y_true, y_prob)
             auc = roc_auc_score(y_true, y_prob)
             st.write(f"**ROC AUC**: {auc:.3f}")
             fig = plt.figure()
             plt.plot(fpr, tpr, label=f"AUC={auc:.3f}")
-            plt.plot([0,1],[0,1], linestyle='--')
-            plt.xlabel('1 - Specificity (FPR)')
-            plt.ylabel('Sensitivity (TPR)')
-            plt.title('ROC Curve')
-            plt.legend(loc="lower right")
-            st.pyplot(fig, use_container_width=True)
-        # ROC
-            fpr, tpr, thr = roc_curve(y_true, y_prob)
-            auc = roc_auc_score(y_true, y_prob)
-            st.write(f"**ROC AUC**: {auc:.3f}")
-            fig = plt.figure()
-            plt.plot(fpr, tpr, label=f"AUC={auc:.3f}")
-            plt.plot([0,1],[0,1], linestyle='--')
+            plt.plot([0, 1], [0, 1], linestyle='--')
             plt.xlabel('1 - Specificity (FPR)')
             plt.ylabel('Sensitivity (TPR)')
             plt.title('ROC Curve')
@@ -306,52 +302,51 @@ if mode == "Binary (Logistic)":
                 try:
                     y2 = pd.to_numeric(work[compare_var], errors="coerce").values
                     mask = ~np.isnan(y2)
+                    # Ortak örneklem
                     y_true_cmp = y_true[mask]
                     y_prob_cmp = y_prob[mask]
                     y2_cmp = y2[mask]
 
-                    # DeLong: AUC GA (model) + AUC GA (tek belirteç) + fark testi
+                    # DeLong: AUC GA'ları ve fark testi
                     auc_m, lo_m, hi_m, se_m = delong_ci(y_true_cmp, y_prob_cmp)
                     auc_x, lo_x, hi_x, se_x = delong_ci(y_true_cmp, y2_cmp)
                     res = delong_roc_test(y_true_cmp, y_prob_cmp, y2_cmp)
 
-                    st.write(
-                        f"**Model (Predicted Probability)**: AUC={auc_m:.3f} "
-                        f"(95% GA {lo_m:.3f}–{hi_m:.3f})"
-                    )
-                    st.write(
-                        f"**{compare_var}**: AUC={auc_x:.3f} "
-                        f"(95% GA {lo_x:.3f}–{hi_x:.3f})"
-                    )
-                    st.success(
-                        f"**DeLong testi**: z={res['z']:.3f}, p={res['p']:.4f} → (H₀: AUC'ler eşit)"
-                    )
+                    st.write(f"**Model (Predicted Probability)**: AUC={auc_m:.3f} (95% GA {lo_m:.3f}–{hi_m:.3f})")
+                    st.write(f"**{compare_var}**: AUC={auc_x:.3f} (95% GA {lo_x:.3f}–{hi_x:.3f})")
+                    st.success(f"**DeLong testi**: z={res['z']:.3f}, p={res['p']:.4f} → (H₀: AUC'ler eşit)")
                 except Exception as e:
                     st.error(f"DeLong hesaplanamadı: {e}")
 
-
-        # ROC Koordinatları CSV  ← Bu satır zaten dosyanda var; yerinde kalsın
-        roc_df = pd.DataFrame({"threshold": thr, "sensitivity": tpr, "fpr": fpr,
-                               "specificity": 1 - fpr, "youden_J": tpr - fpr})
-        st.download_button("ROC Koordinatları (CSV)", roc_df.to_csv(index=False).encode("utf-8"),
-                           file_name="roc_coords.csv", mime="text/csv")
-            
             # ROC Koordinatları CSV
-            roc_df = pd.DataFrame({"threshold": thr, "sensitivity": tpr, "fpr": fpr,
-                                   "specificity": 1 - fpr, "youden_J": tpr - fpr})
-            st.download_button("ROC Koordinatları (CSV)", roc_df.to_csv(index=False).encode("utf-8"),
-                               file_name="roc_coords.csv", mime="text/csv")
+            roc_df = pd.DataFrame({
+                "threshold": thr,
+                "sensitivity": tpr,
+                "fpr": fpr,
+                "specificity": 1 - fpr,
+                "youden_J": tpr - fpr
+            })
+            st.download_button(
+                "ROC Koordinatları (CSV)",
+                roc_df.to_csv(index=False).encode("utf-8"),
+                file_name="roc_coords.csv",
+                mime="text/csv"
+            )
 
             # Youden cut-off
             best = compute_youden(fpr, tpr, thr)
-            st.success(f"**Youden en iyi cut-off** = {best['threshold']:.4f} | "
-                       f"Sens={best['sens']:.3f}, Spec={best['spec']:.3f}, J={best['J']:.3f}")
-            # Kullanıcı cut-off seçimi
+            st.success(
+                f"**Youden en iyi cut-off** = {best['threshold']:.4f} | "
+                f"Sens={best['sens']:.3f}, Spec={best['spec']:.3f}, J={best['J']:.3f}"
+            )
+
+            # Cut-off değerlendirme
             st.subheader("Cut-off Değerlendirme")
             cut_default = float(np.clip(best["threshold"], 0.0, 1.0))
             cut = st.slider("Cut-off (Youden varsayılan)", 0.0, 1.0, cut_default, 0.01)
             cm, acc, sens, spec, ppv, npv, lrpos, lrneg = make_confusion(y_true, y_prob, threshold=cut)
             st.write(pd.DataFrame(cm, index=["Gerçek 0", "Gerçek 1"], columns=["Tahmin 0", "Tahmin 1"]))
+
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Accuracy", f"{acc:.3f}")
             c2.metric("Sensitivity", f"{sens:.3f}")
@@ -362,8 +357,12 @@ if mode == "Binary (Logistic)":
             c6.metric("LR−", f"{lrneg:.3f}" if not pd.isna(lrneg) else "NA")
 
             # İndir
-            st.download_button("Multivariate (CSV)", pretty.to_csv(index=False).encode("utf-8"),
-                               file_name="multivariate_logit.csv", mime="text/csv")
+            st.download_button(
+                "Multivariate (CSV)",
+                pretty.to_csv(index=False).encode("utf-8"),
+                file_name="multivariate_logit.csv",
+                mime="text/csv"
+            )
 
             with st.expander("Statsmodels özet"):
                 st.text(res_m.summary2().as_text())
@@ -384,8 +383,11 @@ else:
 
     # Kategorikler
     st.sidebar.header("3) Kategorik Tanımları")
-    cat_vars = st.sidebar.multiselect("Kategorik (varsa)", options=ivs,
-                                      default=[c for c in ivs if df[c].dtype == 'object'])
+    cat_vars = st.sidebar.multiselect(
+        "Kategorik (varsa)",
+        options=ivs,
+        default=[c for c in ivs if df[c].dtype == 'object']
+    )
     cat_ref = {}
     for c in cat_vars:
         levels = sorted([str(x) for x in pd.Series(df[c]).dropna().unique()])
@@ -410,8 +412,8 @@ else:
             _, res = fit_ols(fml, work)
             coef = res.params[1] if len(res.params) > 1 else np.nan
             ci = res.conf_int()
-            lo = ci.iloc[1,0] if ci.shape[0] > 1 else np.nan
-            hi = ci.iloc[1,1] if ci.shape[0] > 1 else np.nan
+            lo = ci.iloc[1, 0] if ci.shape[0] > 1 else np.nan
+            hi = ci.iloc[1, 1] if ci.shape[0] > 1 else np.nan
             p = res.pvalues[1] if len(res.pvalues) > 1 else np.nan
             uni_rows.append({
                 "değişken": var,
@@ -421,12 +423,16 @@ else:
                 "AIC": res.aic,
                 "BIC": res.bic
             })
-        except Exception as e:
+        except Exception:
             uni_rows.append({"değişken": var, "β (95% GA)": "NA", "p": np.nan, "R²": np.nan, "AIC": np.nan, "BIC": np.nan})
     uni_df = pd.DataFrame(uni_rows).sort_values("p", na_position='last')
     st.dataframe(uni_df, use_container_width=True)
-    st.download_button("Univariate OLS (CSV)", uni_df.to_csv(index=False).encode("utf-8"),
-                       file_name="univariate_ols.csv", mime="text/csv")
+    st.download_button(
+        "Univariate OLS (CSV)",
+        uni_df.to_csv(index=False).encode("utf-8"),
+        file_name="univariate_ols.csv",
+        mime="text/csv"
+    )
 
     # Multivariate OLS
     st.header("🔹 Multivariate Linear Regression")
@@ -441,18 +447,19 @@ else:
             st.code(fml)
         try:
             model, res = fit_ols(fml, work)
-            summ = res.summary2().tables[1].reset_index().rename(columns={"index":"variable"})
+            summ = res.summary2().tables[1].reset_index().rename(columns={"index": "variable"})
             # β ve %95 GA
             ci = res.conf_int()
-            ci.columns = ["ci_low","ci_high"]
+            ci.columns = ["ci_low", "ci_high"]
             summ = summ.merge(ci, left_on="variable", right_index=True, how="left")
             summ["β (95% GA)"] = summ.apply(
-                lambda r: f"{r['Coef.']:.3f} ({r['ci_low']:.3f}–{r['ci_high']:.3f})" if pd.notna(r["Coef."]) else "NA", axis=1)
-            pretty = summ[["variable","β (95% GA)","P>|t|"]]
+                lambda r: f"{r['Coef.']:.3f} ({r['ci_low']:.3f}–{r['ci_high']:.3f})" if pd.notna(r["Coef."]) else "NA", axis=1
+            )
+            pretty = summ[["variable", "β (95% GA)", "P>|t|"]]
             st.subheader("Model Katsayıları")
             st.dataframe(pretty, use_container_width=True)
 
-            c1,c2,c3 = st.columns(3)
+            c1, c2, c3 = st.columns(3)
             c1.metric("R² / Adj-R²", f"{res.rsquared:.3f} / {res.rsquared_adj:.3f}")
             c2.metric("AIC", f"{res.aic:.2f}")
             c3.metric("BIC", f"{res.bic:.2f}")
@@ -486,7 +493,7 @@ st.markdown(
 """
 ---
 **Raporlama notları:**
-- **Binary (Logistic):** Univariate ve Multivariate için OR, %95 GA, p; HL testi; ROC AUC; **Youden cut-off** ve o kesimde Sens/Spec/PPV/NPV/LR±.
+- **Binary (Logistic):** Univariate ve Multivariate için OR, %95 GA, p; HL testi; ROC AUC; **Youden cut-off** ve o kesimde Sens/Spec/PPV/NPV/LR±; **DeLong testi** ile AUC farkı.
 - **Linear (OLS):** β, %95 GA, p; R²/Adj-R²; AIC/BIC; residual incelemeleri.
 - Kategorik değişkenlerde **referans kategori**yi belirtmeyi unutmayın.
 """
