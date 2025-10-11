@@ -364,6 +364,118 @@ if mode == "Binary (Logistic)":
                 mime="text/csv"
             )
 
+            # ================== Yayın Formatı Özet Tablo (Uni + Multi) ==================
+            st.subheader("📋 Özet Tablo (Univariate + Multivariate)")
+
+            # 1) Yardımcı: p formatı ve kalın vurgulama
+            def fmt_p(p):
+                if pd.isna(p):
+                    return ""
+                try:
+                    return "<0.001" if p < 0.001 else f"{p:.3f}"
+                except Exception:
+                    return str(p)
+
+            # 2) Multivariate sonuçlarını sözlüğe çek (Intercept hariç)
+            multi_raw = res_m.summary2().tables[1].reset_index().rename(columns={"index":"term"})
+            ci = res_m.conf_int()
+            ci.columns = ["ci_low","ci_high"]
+            multi_raw = multi_raw.merge(ci, left_on="term", right_index=True, how="left")
+            multi_raw["OR"] = np.exp(multi_raw["Coef."])
+            multi_raw["OR_low"] = np.exp(multi_raw["ci_low"])
+            multi_raw["OR_high"] = np.exp(multi_raw["ci_high"])
+            multi_raw = multi_raw[~multi_raw["term"].str.contains("Intercept", case=False, na=False)].copy()
+
+            # C(kat) isimlerini biraz insanileştir
+            def clean_term(t):
+                # C(var)[T.level] -> var (level)
+                if t.startswith("C(") and ")[T." in t:
+                    base = t.split("C(")[1].split(")")[0]
+                    lev = t.split("[T.")[1].rstrip("]")
+                    return f"{base}: {lev}"
+                return t
+
+            multi_raw["clean"] = multi_raw["term"].map(clean_term)
+            multi_map_or = dict(zip(multi_raw["clean"], 
+                                    [f"{orv:.3f} ({lo:.3f}–{hi:.3f})" 
+                                     for orv, lo, hi in zip(multi_raw["OR"], multi_raw["OR_low"], multi_raw["OR_high"])]))
+            multi_map_p  = dict(zip(multi_raw["clean"], multi_raw["P>|z|"]))
+
+            # 3) Univariate tablosundan (zaten app’te hazır) çek
+            # uni_df: kolon isimleri -> ["değişken","OR (95% GA)","p","AIC","BIC"]
+            uni_tmp = uni_df[["değişken","OR (95% GA)","p"]].copy()
+            uni_tmp.rename(columns={"değişken":"Variable",
+                                    "OR (95% GA)":"Univariate OR (95% CI)",
+                                    "p":"Univariate P"}, inplace=True)
+
+            # 4) (İsteğe bağlı) ölçekli gösterim: örn. SII/100 ikinci satır
+            st.caption("İsteğe bağlı: bir değişkeni ölçekleyerek (örn. SII/100) ek satır oluştur.")
+            add_scaled = st.checkbox("Ölçekli satır ekle (örn. SII/100)", value=False)
+            if add_scaled:
+                scale_var = st.selectbox("Ölçeklenecek değişken", options=uni_tmp["Variable"].tolist())
+                scale_val = st.number_input("Ölçek katsayısı (örn. 100 → SII/100)", min_value=1.0, value=100.0, step=1.0)
+                # Univariate için yeni isimli satır kopyası (OR aynı; sadece isim değişir – rapor amaçlı)
+                r = uni_tmp.loc[uni_tmp["Variable"] == scale_var].copy()
+                if not r.empty:
+                    r = r.assign(Variable = scale_var + f" / {int(scale_val)}")
+                    uni_tmp = pd.concat([uni_tmp, r], ignore_index=True)
+                # Multivariate için de aynı ismi aramaya çalışırız (bulunmazsa "/")
+                # Not: Gerçek OR'u farklı ölçekle yeniden fit etmek istersen ek model gerekir.
+
+            # 5) Birleştir
+            # Multivariate değerlerini isimle eşleştir (aynı isimde satır varsa doldurur; yoksa "/")
+            def take_multi_or(name):
+                return multi_map_or.get(name, "/")
+            def take_multi_p(name):
+                p = multi_map_p.get(name, np.nan)
+                return fmt_p(p) if not pd.isna(p) else "/"
+
+            out = uni_tmp.copy()
+            out["Multivariate OR (95% CI)"] = out["Variable"].map(take_multi_or)
+            out["Multivariate P"] = out["Variable"].map(take_multi_p)
+            # Univariate p biçimlendir
+            out["Univariate P"] = out["Univariate P"].apply(fmt_p)
+
+            # Yayın sırası için sütunları düzenle
+            out = out[["Variable", 
+                       "Univariate OR (95% CI)", "Univariate P", 
+                       "Multivariate OR (95% CI)", "Multivariate P"]]
+
+            # 6) Stil: p<0.05 vurgusu
+            def highlight_sig(s):
+                try:
+                    # "<0.001" veya "0.012" gibi biçimlere bak
+                    val = s.replace("<","")
+                    return float(val) < 0.05
+                except Exception:
+                    return False
+
+            styler = out.style.format(na_rep="").applymap(
+                lambda v: "font-weight:bold;" if isinstance(v, str) and highlight_sig(v) else ""
+            , subset=["Univariate P","Multivariate P"])
+
+            st.dataframe(styler, use_container_width=True)
+
+            # 7) İndirme
+            st.download_button(
+                "Özet Tablo (CSV)",
+                out.to_csv(index=False).encode("utf-8"),
+                file_name="summary_uni_multi.csv",
+                mime="text/csv"
+            )
+            # Excel de isteyenler için
+            import io as _io
+            buf = _io.BytesIO()
+            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                out.to_excel(writer, sheet_name="Summary", index=False)
+            st.download_button(
+                "Özet Tablo (XLSX)",
+                data=buf.getvalue(),
+                file_name="summary_uni_multi.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            
             with st.expander("Statsmodels özet"):
                 st.text(res_m.summary2().as_text())
 
