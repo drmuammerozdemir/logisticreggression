@@ -6,3 +6,4 @@ statsmodels
 scikit-learn
 matplotlib
 pyreadstat
+xlsxwriter>=3.2.0
