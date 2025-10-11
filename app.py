@@ -12,6 +12,7 @@ import streamlit as st
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from sklearn.metrics import roc_auc_score, confusion_matrix, roc_curve
+from delong import delong_ci, delong_roc_test
 
 # Görselleştirme
 import matplotlib.pyplot as plt
@@ -277,7 +278,55 @@ if mode == "Binary (Logistic)":
             plt.title('ROC Curve')
             plt.legend(loc="lower right")
             st.pyplot(fig, use_container_width=True)
+        # ROC
+        fpr, tpr, thr = roc_curve(y_true, y_prob)
+        auc = roc_auc_score(y_true, y_prob)
+        st.write(f"**ROC AUC**: {auc:.3f}")
+        fig = plt.figure()
+        plt.plot(fpr, tpr, label=f"AUC={auc:.3f}")
+        plt.plot([0,1],[0,1], linestyle='--')
+        plt.xlabel('1 - Specificity (FPR)')
+        plt.ylabel('Sensitivity (TPR)')
+        plt.title('ROC Curve')
+        plt.legend(loc="lower right")
+        st.pyplot(fig, use_container_width=True)
 
+        # ==== PASTE START: DeLong Karşılaştırma ====
+        st.subheader("ROC Karşılaştırma (DeLong)")
+
+        # 1) Model skorları zaten y_prob
+        # 2) Karşılaştırılacak ikinci skoru seç: herhangi bir sayısal sütun
+        num_cols = [c for c in work.columns if c != dv_use and np.issubdtype(work[c].dtype, np.number)]
+        compare_var = st.selectbox("Karşılaştırılacak ikinci skor/değişken (örn. TRP, 3OHKYN):",
+                                   options=num_cols)
+
+        if compare_var:
+            try:
+                y2 = pd.to_numeric(work[compare_var], errors="coerce").values
+                mask = ~np.isnan(y2)
+                # Aynı örneklemde eksik varsa, ikisini ortak alt kümeye indir
+                y_true_cmp = y_true[mask]
+                y_prob_cmp = y_prob[mask]
+                y2_cmp = y2[mask]
+
+                # DeLong: AUC GA (model) + AUC GA (tek belirteç) + fark testi
+                auc_m, lo_m, hi_m, se_m = delong_ci(y_true_cmp, y_prob_cmp)
+                auc_x, lo_x, hi_x, se_x = delong_ci(y_true_cmp, y2_cmp)
+                res = delong_roc_test(y_true_cmp, y_prob_cmp, y2_cmp)
+
+                st.write(f"**Model (Predicted Probability)**: AUC={auc_m:.3f} (95% GA {lo_m:.3f}–{hi_m:.3f})")
+                st.write(f"**{compare_var}**: AUC={auc_x:.3f} (95% GA {lo_x:.3f}–{hi_x:.3f})")
+                st.success(f"**DeLong testi**: z={res['z']:.3f}, p={res['p']:.4f} → (H₀: AUC'ler eşit)")
+            except Exception as e:
+                st.error(f"DeLong hesaplanamadı: {e}")
+        # ==== PASTE END ====
+
+        # ROC Koordinatları CSV  ← Bu satır zaten dosyanda var; yerinde kalsın
+        roc_df = pd.DataFrame({"threshold": thr, "sensitivity": tpr, "fpr": fpr,
+                               "specificity": 1 - fpr, "youden_J": tpr - fpr})
+        st.download_button("ROC Koordinatları (CSV)", roc_df.to_csv(index=False).encode("utf-8"),
+                           file_name="roc_coords.csv", mime="text/csv")
+            
             # ROC Koordinatları CSV
             roc_df = pd.DataFrame({"threshold": thr, "sensitivity": tpr, "fpr": fpr,
                                    "specificity": 1 - fpr, "youden_J": tpr - fpr})
