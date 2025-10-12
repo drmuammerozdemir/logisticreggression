@@ -14,6 +14,7 @@ import statsmodels.formula.api as smf
 from sklearn.metrics import roc_auc_score, confusion_matrix, roc_curve
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from delong import delong_ci, delong_roc_test
+from scipy.stats import norm
 
 # Görselleştirme
 import matplotlib.pyplot as plt
@@ -123,6 +124,82 @@ def compute_youden(fpr, tpr, thr):
         "spec": float(1 - fpr[idx]),
         "index": idx
     }
+
+def _sigmoid(z):
+    return 1.0 / (1.0 + np.exp(-z))
+
+def firth_logit(X, y, names=None, maxiter=200, tol=1e-8):
+    """
+    Firth (Jeffreys prior) bias-reduced logistic regression.
+    Kaynak: Firth (1993); Kosmidis & Firth (2010) – penalized score iterasyonları.
+    Girdi:  X (n×p), y (n,) {0,1}; names = değişken adları (liste)
+    Çıktı:  dict → coef, se, z, p, ci_low, ci_high, names, converged, y_prob
+    """
+    X = np.asarray(X, float)
+    y = np.asarray(y, int)
+    n, p = X.shape
+    beta = np.zeros(p)
+
+    converged = False
+    for _ in range(maxiter):
+        eta = X @ beta
+        p_i = _sigmoid(eta)
+        W = p_i * (1.0 - p_i)            # n,
+        # X'WX ve tersi
+        XWX = X.T @ (W[:, None] * X)
+        try:
+            XWX_inv = np.linalg.inv(XWX)
+        except np.linalg.LinAlgError:
+            XWX_inv = np.linalg.pinv(XWX)
+
+        # Hat matrisi diyagonali: h = diag(W^{1/2} X (X'WX)^{-1} X' W^{1/2})
+        # pratik hesap: S = (X * W) @ (X'WX)^{-1}; h = satır iç çarpım(S, X)
+        S = (X * W[:, None]) @ XWX_inv
+        h = np.sum(S * X, axis=1)
+
+        # Penalize edilmiş skor: U* = X'(y - p + a), a_i = (1/2 - h_i) * (1 - 2p_i)
+        a = (0.5 - h) * (1.0 - 2.0 * p_i)
+        Ustar = X.T @ (y - p_i + a)
+
+        step = XWX_inv @ Ustar
+        beta_new = beta + step
+
+        if np.max(np.abs(step)) < tol:
+            beta = beta_new
+            converged = True
+            break
+        beta = beta_new
+
+    # Son kovaryans (penalize edilmiş Fisher)
+    eta = X @ beta
+    p_i = _sigmoid(eta)
+    W = p_i * (1.0 - p_i)
+    XWX = X.T @ (W[:, None] * X)
+    try:
+        cov = np.linalg.inv(XWX)
+    except np.linalg.LinAlgError:
+        cov = np.linalg.pinv(XWX)
+    se = np.sqrt(np.diag(cov))
+    z = beta / se
+    pvals = 2 * (1 - norm.cdf(np.abs(z)))
+    zcrit = norm.ppf(0.975)
+    ci_low = beta - zcrit * se
+    ci_high = beta + zcrit * se
+
+    return {
+        "coef": beta, "se": se, "z": z, "p": pvals,
+        "ci_low": ci_low, "ci_high": ci_high,
+        "names": names if names is not None else [f"x{i}" for i in range(len(beta))],
+        "converged": converged, "y_prob": p_i
+    }
+
+def firth_by_formula(formula, data):
+    """Aynı formülü kullanarak tasarım matrisini al ve Firth uygula."""
+    model = smf.logit(formula, data=data)    # exog/endog hazır gelir
+    X = model.exog
+    y = model.endog
+    names = model.exog_names
+    return firth_logit(X, y, names=names)
 
 def hosmer_lemeshow(y_true, y_prob, g=10):
     data = pd.DataFrame({"y": y_true, "p": y_prob}).sort_values("p").reset_index(drop=True)
@@ -315,7 +392,48 @@ if mode == "Binary (Logistic)":
             plt.title('ROC Curve')
             plt.legend(loc="lower right")
             st.pyplot(fig, use_container_width=True)
+                       
+            # ===== Firth bias-reduced logistic (opsiyonel) =====
+            st.subheader("🛡️ Firth (bias-reduced) Lojistik – Ayrışmaya dayanıklı")
+            use_firth = st.checkbox("Model 1'i Firth ile yeniden tahmin et", value=False)
+            if use_firth:
+                try:
+                    fr = firth_by_formula(fml_multi, work)
+                    fnames = fr["names"]
 
+                    # Intercept'i at, tablo hazırla
+                    rows = []
+                    for nm, b, lo, hi, p in zip(
+                        fnames, fr["coef"], fr["ci_low"], fr["ci_high"], fr["p"]
+                    ):
+                        if str(nm).lower().startswith("intercept"):
+                            continue
+                        OR, L, H = np.exp(b), np.exp(lo), np.exp(hi)
+                        rows.append({
+                            "variable": nm,
+                            "OR (95% GA)": f"{OR:.3f} ({L:.3f}–{H:.3f})",
+                            "p": "<0.001" if p < 0.001 else f"{p:.3f}"
+                        })
+                    firth_df = pd.DataFrame(rows)
+                    st.dataframe(firth_df, use_container_width=True)
+                    st.caption("Not: Firth, separation durumlarında stabil OR/GA üretir (Jeffreys prior).")
+
+                    # (İsteğe bağlı) ROC/AUC'yi Firth olasılıklarıyla da göster
+                    fpr_f, tpr_f, thr_f = roc_curve(y_true, fr["y_prob"])
+                    auc_f = roc_auc_score(y_true, fr["y_prob"])
+                    fig_f = plt.figure()
+                    plt.plot(fpr, tpr, label=f"Klasik Model 1 (AUC={auc:.3f})")
+                    plt.plot(fpr_f, tpr_f, label=f"Firth Model 1 (AUC={auc_f:.3f})")
+                    plt.plot([0,1],[0,1],'--')
+                    plt.xlabel('1 - Specificity (FPR)'); plt.ylabel('Sensitivity (TPR)')
+                    plt.title('ROC: Klasik vs Firth')
+                    plt.legend(loc="lower right")
+                    st.pyplot(fig_f, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Firth hesaplanamadı: {e}")
+
+            
             # ==== DeLong Karşılaştırma (Model vs Tek Belirteç / İki Skor) ====
             st.subheader("ROC Karşılaştırma (DeLong)")
 
