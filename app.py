@@ -1,6 +1,6 @@
 # ============================================================
 # 🔬 Binary (Logistic) + Continuous (Linear) Regression Toolkit
-# Univariate tarama + Multivariate model + (Binary) ROC–AUC, Youden cut-off, DeLong testi
+# Univariate tarama + Multivariate model + (Binary) ROC–AUC, Youden cut-off, DeLong testi, Firth lojistik
 # ============================================================
 
 import io
@@ -125,16 +125,21 @@ def compute_youden(fpr, tpr, thr):
         "index": idx
     }
 
+# ---- Unstable kontrolü (uçuk/sonsuz CI vs.) ----
+def _is_unstable(orv, lo, hi, fold_limit=1e6):
+    if not (np.isfinite(orv) and np.isfinite(lo) and np.isfinite(hi)):
+        return True
+    if lo <= 0 or hi <= 0:
+        return True
+    if (hi / lo) > fold_limit:
+        return True
+    return False
+
+# ---- Firth helpers ----
 def _sigmoid(z):
     return 1.0 / (1.0 + np.exp(-z))
 
 def firth_logit(X, y, names=None, maxiter=200, tol=1e-8):
-    """
-    Firth (Jeffreys prior) bias-reduced logistic regression.
-    Kaynak: Firth (1993); Kosmidis & Firth (2010) – penalized score iterasyonları.
-    Girdi:  X (n×p), y (n,) {0,1}; names = değişken adları (liste)
-    Çıktı:  dict → coef, se, z, p, ci_low, ci_high, names, converged, y_prob
-    """
     X = np.asarray(X, float)
     y = np.asarray(y, int)
     n, p = X.shape
@@ -144,20 +149,16 @@ def firth_logit(X, y, names=None, maxiter=200, tol=1e-8):
     for _ in range(maxiter):
         eta = X @ beta
         p_i = _sigmoid(eta)
-        W = p_i * (1.0 - p_i)            # n,
-        # X'WX ve tersi
+        W = p_i * (1.0 - p_i)
         XWX = X.T @ (W[:, None] * X)
         try:
             XWX_inv = np.linalg.inv(XWX)
         except np.linalg.LinAlgError:
             XWX_inv = np.linalg.pinv(XWX)
 
-        # Hat matrisi diyagonali: h = diag(W^{1/2} X (X'WX)^{-1} X' W^{1/2})
-        # pratik hesap: S = (X * W) @ (X'WX)^{-1}; h = satır iç çarpım(S, X)
         S = (X * W[:, None]) @ XWX_inv
         h = np.sum(S * X, axis=1)
 
-        # Penalize edilmiş skor: U* = X'(y - p + a), a_i = (1/2 - h_i) * (1 - 2p_i)
         a = (0.5 - h) * (1.0 - 2.0 * p_i)
         Ustar = X.T @ (y - p_i + a)
 
@@ -170,7 +171,6 @@ def firth_logit(X, y, names=None, maxiter=200, tol=1e-8):
             break
         beta = beta_new
 
-    # Son kovaryans (penalize edilmiş Fisher)
     eta = X @ beta
     p_i = _sigmoid(eta)
     W = p_i * (1.0 - p_i)
@@ -194,8 +194,7 @@ def firth_logit(X, y, names=None, maxiter=200, tol=1e-8):
     }
 
 def firth_by_formula(formula, data):
-    """Aynı formülü kullanarak tasarım matrisini al ve Firth uygula."""
-    model = smf.logit(formula, data=data)    # exog/endog hazır gelir
+    model = smf.logit(formula, data=data)
     X = model.exog
     y = model.endog
     names = model.exog_names
@@ -282,34 +281,41 @@ if mode == "Binary (Logistic)":
         try:
             fml = build_formula(dv_use, [var], cat_info=cat_ref)
             _, res = fit_logit(fml, work)
-        if rows.shape[0] == 1:
-            if _is_unstable(OR, lo, hi):
-                try:
-                    fr_uni = firth_by_formula(fml, work)
-                    mask = [not str(nm).lower().startswith("intercept") for nm in fr_uni["names"]]
-                    b, lo, hi = fr_uni["coef"][mask][0], fr_uni["ci_low"][mask][0], fr_uni["ci_high"][mask][0]
-                    or_str = f"{np.exp(b):.3f} ({np.exp(lo):.3f}–{np.exp(hi):.3f}) [Firth]"
-                except Exception:
-                    or_str = "NE (unstable/separation)"
-            else:
-                or_str = f"{OR:.3f} ({lo:.3f}–{hi:.3f})"
 
             tab = extract_or_table(res)
             rows = tab[~tab["variable"].str.contains("Intercept", case=False, na=False)].copy()
             p_display = rows["p"].min() if rows.shape[0] > 0 else np.nan
+
             if rows.shape[0] == 1:
-                OR, lo, hi = rows["OR"].iloc[0], rows["OR_low"].iloc[0], rows["OR_high"].iloc[0]
+                OR = rows["OR"].iloc[0]
+                lo = rows["OR_low"].iloc[0]
+                hi = rows["OR_high"].iloc[0]
+                if _is_unstable(OR, lo, hi):
+                    # Ayrışma/unstable → Firth ile dene
+                    try:
+                        fr_uni = firth_by_formula(fml, work)
+                        mask = [not str(nm).lower().startswith("intercept") for nm in fr_uni["names"]]
+                        b, lo_b, hi_b = fr_uni["coef"][mask][0], fr_uni["ci_low"][mask][0], fr_uni["ci_high"][mask][0]
+                        or_str = f"{np.exp(b):.3f} ({np.exp(lo_b):.3f}–{np.exp(hi_b):.3f}) [Firth]"
+                    except Exception:
+                        or_str = "NE (unstable/separation)"
+                else:
+                    or_str = f"{OR:.3f} ({lo:.3f}–{hi:.3f})"
             else:
-                OR, lo, hi = (np.nan, np.nan, np.nan)
+                # çok düzeyli kategorik: tek OR yok → makalede genelde seviyeler ayrı verilir
+                or_str = "NA"
+
             uni_rows.append({
                 "değişken": var,
-                "OR (95% GA)": format_or_ci(OR, lo, hi),
+                "OR (95% GA)": or_str,
                 "p": p_display,
                 "AIC": res.aic,
                 "BIC": res.bic
             })
+
         except Exception:
             uni_rows.append({"değişken": var, "OR (95% GA)": "NA", "p": np.nan, "AIC": np.nan, "BIC": np.nan})
+
     uni_df = pd.DataFrame(uni_rows).sort_values("p", na_position='last')
     st.dataframe(uni_df, use_container_width=True)
     st.download_button(
@@ -363,22 +369,21 @@ if mode == "Binary (Logistic)":
             st.write(f"**Hosmer–Lemeshow**: χ² = {chi_hl:.3f}, p = {p_hl:.3f}")
             with st.expander("HL Grup Tablosu"):
                 st.dataframe(tbl_hl)
-                
-                        # ===== VIF (multicollinearity) =====
+
+            # ===== VIF (multicollinearity) =====
             try:
                 exog = res_m.model.exog
-                names = res_m.model.exog_names  # örn. ['Intercept','TRP','C(var)[T.lv]']
+                names = res_m.model.exog_names
                 vif_rows = []
                 for i, nm in enumerate(names):
                     if nm.lower().startswith("intercept"):
-                        continue  # sabiti at
+                        continue
                     try:
                         vif_val = variance_inflation_factor(exog, i)
                         vif_rows.append({"Variable": nm, "VIF": float(vif_val), "Tolerance": float(1.0/vif_val)})
                     except Exception:
                         vif_rows.append({"Variable": nm, "VIF": np.nan, "Tolerance": np.nan})
                 vif_df = pd.DataFrame(vif_rows).sort_values("VIF", na_position="last")
-                # görsel vurgu: VIF>5 kalın
                 def _style_vif(v):
                     try:
                         return "font-weight:bold;" if float(v) > 5 else ""
@@ -392,7 +397,7 @@ if mode == "Binary (Logistic)":
             except Exception as e:
                 st.warning(f"VIF hesaplanamadı: {e}")
 
-            # ROC (TEK KERE)
+            # ROC (tek kere)
             fpr, tpr, thr = roc_curve(y_true, y_prob)
             auc = roc_auc_score(y_true, y_prob)
             st.write(f"**ROC AUC**: {auc:.3f}")
@@ -404,7 +409,7 @@ if mode == "Binary (Logistic)":
             plt.title('ROC Curve')
             plt.legend(loc="lower right")
             st.pyplot(fig, use_container_width=True)
-                       
+
             # ===== Firth bias-reduced logistic (opsiyonel) =====
             st.subheader("🛡️ Firth (bias-reduced) Lojistik – Ayrışmaya dayanıklı")
             use_firth = st.checkbox("Model 1'i Firth ile yeniden tahmin et", value=False)
@@ -413,30 +418,29 @@ if mode == "Binary (Logistic)":
                     fr = firth_by_formula(fml_multi, work)
                     fnames = fr["names"]
 
-                    # Intercept'i at, tablo hazırla
-                    rows = []
-                    for nm, b, lo, hi, p in zip(
+                    rows_f = []
+                    for nm, b, lo_b, hi_b, p_b in zip(
                         fnames, fr["coef"], fr["ci_low"], fr["ci_high"], fr["p"]
                     ):
                         if str(nm).lower().startswith("intercept"):
                             continue
-                        OR, L, H = np.exp(b), np.exp(lo), np.exp(hi)
-                        rows.append({
+                        ORb, Lb, Hb = np.exp(b), np.exp(lo_b), np.exp(hi_b)
+                        rows_f.append({
                             "variable": nm,
-                            "OR (95% GA)": f"{OR:.3f} ({L:.3f}–{H:.3f})",
-                            "p": "<0.001" if p < 0.001 else f"{p:.3f}"
+                            "OR (95% GA)": f"{ORb:.3f} ({Lb:.3f}–{Hb:.3f})",
+                            "p": "<0.001" if p_b < 0.001 else f"{p_b:.3f}"
                         })
-                    firth_df = pd.DataFrame(rows)
+                    firth_df = pd.DataFrame(rows_f)
                     st.dataframe(firth_df, use_container_width=True)
                     st.caption("Not: Firth, separation durumlarında stabil OR/GA üretir (Jeffreys prior).")
 
-                    # (İsteğe bağlı) ROC/AUC'yi Firth olasılıklarıyla da göster
+                    # ROC kıyası
                     fpr_f, tpr_f, thr_f = roc_curve(y_true, fr["y_prob"])
                     auc_f = roc_auc_score(y_true, fr["y_prob"])
                     fig_f = plt.figure()
                     plt.plot(fpr, tpr, label=f"Klasik Model 1 (AUC={auc:.3f})")
                     plt.plot(fpr_f, tpr_f, label=f"Firth Model 1 (AUC={auc_f:.3f})")
-                    plt.plot([0,1],[0,1],'--')
+                    plt.plot([0, 1], [0, 1], '--')
                     plt.xlabel('1 - Specificity (FPR)'); plt.ylabel('Sensitivity (TPR)')
                     plt.title('ROC: Klasik vs Firth')
                     plt.legend(loc="lower right")
@@ -445,28 +449,21 @@ if mode == "Binary (Logistic)":
                 except Exception as e:
                     st.error(f"Firth hesaplanamadı: {e}")
 
-            
             # ==== DeLong Karşılaştırma (Model vs Tek Belirteç / İki Skor) ====
             st.subheader("ROC Karşılaştırma (DeLong)")
-
-            # 1) Model skorları zaten y_prob
-            # 2) Karşılaştırılacak ikinci skoru seç: herhangi bir sayısal sütun
             num_cols = [c for c in work.columns if c != dv_use and np.issubdtype(work[c].dtype, np.number)]
             compare_var = st.selectbox(
                 "Karşılaştırılacak ikinci skor/değişken (örn. TRP, 3OHKYN):",
                 options=num_cols
             )
-
             if compare_var:
                 try:
                     y2 = pd.to_numeric(work[compare_var], errors="coerce").values
                     mask = ~np.isnan(y2)
-                    # Ortak örneklem
                     y_true_cmp = y_true[mask]
                     y_prob_cmp = y_prob[mask]
                     y2_cmp = y2[mask]
 
-                    # DeLong: AUC GA'ları ve fark testi
                     auc_m, lo_m, hi_m, se_m = delong_ci(y_true_cmp, y_prob_cmp)
                     auc_x, lo_x, hi_x, se_x = delong_ci(y_true_cmp, y2_cmp)
                     res = delong_roc_test(y_true_cmp, y_prob_cmp, y2_cmp)
@@ -526,7 +523,6 @@ if mode == "Binary (Logistic)":
             # ================== Yayın Formatı Özet Tablo (Uni + Multi) ==================
             st.subheader("📋 Özet Tablo (Univariate + Multivariate)")
 
-            # 1) Yardımcı: p formatı ve kalın vurgulama
             def fmt_p(p):
                 if pd.isna(p):
                     return ""
@@ -535,19 +531,16 @@ if mode == "Binary (Logistic)":
                 except Exception:
                     return str(p)
 
-            # 2) Multivariate sonuçlarını sözlüğe çek (Intercept hariç)
-            multi_raw = res_m.summary2().tables[1].reset_index().rename(columns={"index":"term"})
-            ci = res_m.conf_int()
-            ci.columns = ["ci_low","ci_high"]
-            multi_raw = multi_raw.merge(ci, left_on="term", right_index=True, how="left")
+            multi_raw = res_m.summary2().tables[1].reset_index().rename(columns={"index": "term"})
+            ci_m = res_m.conf_int()
+            ci_m.columns = ["ci_low", "ci_high"]
+            multi_raw = multi_raw.merge(ci_m, left_on="term", right_index=True, how="left")
             multi_raw["OR"] = np.exp(multi_raw["Coef."])
             multi_raw["OR_low"] = np.exp(multi_raw["ci_low"])
             multi_raw["OR_high"] = np.exp(multi_raw["ci_high"])
             multi_raw = multi_raw[~multi_raw["term"].str.contains("Intercept", case=False, na=False)].copy()
 
-            # C(kat) isimlerini biraz insanileştir
             def clean_term(t):
-                # C(var)[T.level] -> var (level)
                 if t.startswith("C(") and ")[T." in t:
                     base = t.split("C(")[1].split(")")[0]
                     lev = t.split("[T.")[1].rstrip("]")
@@ -555,36 +548,31 @@ if mode == "Binary (Logistic)":
                 return t
 
             multi_raw["clean"] = multi_raw["term"].map(clean_term)
-            multi_map_or = dict(zip(multi_raw["clean"], 
-                                    [f"{orv:.3f} ({lo:.3f}–{hi:.3f})" 
-                                     for orv, lo, hi in zip(multi_raw["OR"], multi_raw["OR_low"], multi_raw["OR_high"])]))
-            multi_map_p  = dict(zip(multi_raw["clean"], multi_raw["P>|z|"]))
+            multi_map_or = dict(zip(
+                multi_raw["clean"],
+                [f"{o:.3f} ({lo:.3f}–{hi:.3f})" for o, lo, hi in zip(multi_raw["OR"], multi_raw["OR_low"], multi_raw["OR_high"])]
+            ))
+            multi_map_p = dict(zip(multi_raw["clean"], multi_raw["P>|z|"]))
 
-            # 3) Univariate tablosundan (zaten app’te hazır) çek
-            # uni_df: kolon isimleri -> ["değişken","OR (95% GA)","p","AIC","BIC"]
-            uni_tmp = uni_df[["değişken","OR (95% GA)","p"]].copy()
-            uni_tmp.rename(columns={"değişken":"Variable",
-                                    "OR (95% GA)":"Univariate OR (95% CI)",
-                                    "p":"Univariate P"}, inplace=True)
+            # Univariate özetinden çek
+            uni_tmp = uni_df[["değişken", "OR (95% GA)", "p"]].copy()
+            uni_tmp.rename(columns={"değişken": "Variable",
+                                    "OR (95% GA)": "Univariate OR (95% CI)",
+                                    "p": "Univariate P"}, inplace=True)
 
-            # 4) (İsteğe bağlı) ölçekli gösterim: örn. SII/100 ikinci satır
             st.caption("İsteğe bağlı: bir değişkeni ölçekleyerek (örn. SII/100) ek satır oluştur.")
             add_scaled = st.checkbox("Ölçekli satır ekle (örn. SII/100)", value=False)
             if add_scaled:
                 scale_var = st.selectbox("Ölçeklenecek değişken", options=uni_tmp["Variable"].tolist())
                 scale_val = st.number_input("Ölçek katsayısı (örn. 100 → SII/100)", min_value=1.0, value=100.0, step=1.0)
-                # Univariate için yeni isimli satır kopyası (OR aynı; sadece isim değişir – rapor amaçlı)
                 r = uni_tmp.loc[uni_tmp["Variable"] == scale_var].copy()
                 if not r.empty:
-                    r = r.assign(Variable = scale_var + f" / {int(scale_val)}")
+                    r = r.assign(Variable=scale_var + f" / {int(scale_val)}")
                     uni_tmp = pd.concat([uni_tmp, r], ignore_index=True)
-                # Multivariate için de aynı ismi aramaya çalışırız (bulunmazsa "/")
-                # Not: Gerçek OR'u farklı ölçekle yeniden fit etmek istersen ek model gerekir.
 
-            # 5) Birleştir
-            # Multivariate değerlerini isimle eşleştir (aynı isimde satır varsa doldurur; yoksa "/")
             def take_multi_or(name):
                 return multi_map_or.get(name, "/")
+
             def take_multi_p(name):
                 p = multi_map_p.get(name, np.nan)
                 return fmt_p(p) if not pd.isna(p) else "/"
@@ -592,37 +580,32 @@ if mode == "Binary (Logistic)":
             out = uni_tmp.copy()
             out["Multivariate OR (95% CI)"] = out["Variable"].map(take_multi_or)
             out["Multivariate P"] = out["Variable"].map(take_multi_p)
-            # Univariate p biçimlendir
             out["Univariate P"] = out["Univariate P"].apply(fmt_p)
 
-            # Yayın sırası için sütunları düzenle
-            out = out[["Variable", 
-                       "Univariate OR (95% CI)", "Univariate P", 
+            out = out[["Variable",
+                       "Univariate OR (95% CI)", "Univariate P",
                        "Multivariate OR (95% CI)", "Multivariate P"]]
 
-            # 6) Stil: p<0.05 vurgusu
             def highlight_sig(s):
                 try:
-                    # "<0.001" veya "0.012" gibi biçimlere bak
-                    val = s.replace("<","")
+                    val = s.replace("<", "")
                     return float(val) < 0.05
                 except Exception:
                     return False
 
             styler = out.style.format(na_rep="").applymap(
-                lambda v: "font-weight:bold;" if isinstance(v, str) and highlight_sig(v) else ""
-            , subset=["Univariate P","Multivariate P"])
-
+                lambda v: "font-weight:bold;" if isinstance(v, str) and highlight_sig(v) else "",
+                subset=["Univariate P", "Multivariate P"]
+            )
             st.dataframe(styler, use_container_width=True)
 
-            # 7) İndirme
             st.download_button(
                 "Özet Tablo (CSV)",
                 out.to_csv(index=False).encode("utf-8"),
                 file_name="summary_uni_multi.csv",
                 mime="text/csv"
             )
-            # Excel de isteyenler için
+            # Excel (xlsxwriter gerekli)
             import io as _io
             buf = _io.BytesIO()
             with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
@@ -634,7 +617,6 @@ if mode == "Binary (Logistic)":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-            
             with st.expander("Statsmodels özet"):
                 st.text(res_m.summary2().as_text())
 
@@ -719,7 +701,6 @@ else:
         try:
             model, res = fit_ols(fml, work)
             summ = res.summary2().tables[1].reset_index().rename(columns={"index": "variable"})
-            # β ve %95 GA
             ci = res.conf_int()
             ci.columns = ["ci_low", "ci_high"]
             summ = summ.merge(ci, left_on="variable", right_index=True, how="left")
@@ -747,7 +728,6 @@ else:
             plt.title("Residuals vs Fitted")
             st.pyplot(fig1, use_container_width=True)
 
-            # Basit QQ
             from statsmodels.graphics.gofplots import qqplot
             fig2 = plt.figure()
             qqplot(resid, line='s', ax=plt.gca())
@@ -764,7 +744,7 @@ st.markdown(
 """
 ---
 **Raporlama notları:**
-- **Binary (Logistic):** Univariate ve Multivariate için OR, %95 GA, p; HL testi; ROC AUC; **Youden cut-off** ve o kesimde Sens/Spec/PPV/NPV/LR±; **DeLong testi** ile AUC farkı.
+- **Binary (Logistic):** Univariate ve Multivariate için OR, %95 GA, p; HL testi; ROC AUC; **Youden cut-off** ve o kesimde Sens/Spec/PPV/NPV/LR±; **DeLong testi** ile AUC farkı; gerekirse **Firth** ile stabil sonuç.
 - **Linear (OLS):** β, %95 GA, p; R²/Adj-R²; AIC/BIC; residual incelemeleri.
 - Kategorik değişkenlerde **referans kategori**yi belirtmeyi unutmayın.
 """
