@@ -282,9 +282,9 @@ if mode == "Binary (Logistic)":
         try:
             fml = build_formula(dv_use, [var], cat_info=cat_ref)
             _, res = fit_logit(fml, work)
-            if rows.shape[0] == 1:
-            if _is_unstable(OR, lo, hi):   # 12 boşluk
-                try:                        # 16 boşluk
+                    if rows.shape[0] == 1:
+            if _is_unstable(OR, lo, hi):
+                try:
                     fr_uni = firth_by_formula(fml, work)
                     mask = [not str(nm).lower().startswith("intercept") for nm in fr_uni["names"]]
                     b, lo, hi = fr_uni["coef"][mask][0], fr_uni["ci_low"][mask][0], fr_uni["ci_high"][mask][0]
@@ -293,7 +293,6 @@ if mode == "Binary (Logistic)":
                     or_str = "NE (unstable/separation)"
             else:
                 or_str = f"{OR:.3f} ({lo:.3f}–{hi:.3f})"
-
 
             tab = extract_or_table(res)
             rows = tab[~tab["variable"].str.contains("Intercept", case=False, na=False)].copy()
