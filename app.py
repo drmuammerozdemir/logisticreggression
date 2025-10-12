@@ -282,7 +282,7 @@ if mode == "Binary (Logistic)":
         try:
             fml = build_formula(dv_use, [var], cat_info=cat_ref)
             _, res = fit_logit(fml, work)
-                    if rows.shape[0] == 1:
+        if rows.shape[0] == 1:
             if _is_unstable(OR, lo, hi):
                 try:
                     fr_uni = firth_by_formula(fml, work)
