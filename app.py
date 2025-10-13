@@ -274,7 +274,7 @@ if mode == "Binary (Logistic)":
     n_after = work.shape[0]
     st.sidebar.caption(f"Eksik nedeniyle düşen gözlem: {n_before - n_after}")
 
-    # ---------- Univariate ---------- #
+        # ---------- Univariate ---------- #
     st.header("🔹 Univariate Logistic Regression")
     uni_rows = []
     for var in ivs:
@@ -287,22 +287,26 @@ if mode == "Binary (Logistic)":
             p_display = rows["p"].min() if rows.shape[0] > 0 else np.nan
 
             if rows.shape[0] == 1:
+                # Tek katsayı → OR/CI hesapla
                 OR = rows["OR"].iloc[0]
                 lo = rows["OR_low"].iloc[0]
                 hi = rows["OR_high"].iloc[0]
+
+                # ===== MINI FIRTH FALLBACK (yalnızca patlayan/sonsuz/çok geniş CI'da) =====
                 if _is_unstable(OR, lo, hi):
-                    # Ayrışma/unstable → Firth ile dene
                     try:
                         fr_uni = firth_by_formula(fml, work)
                         mask = [not str(nm).lower().startswith("intercept") for nm in fr_uni["names"]]
                         b, lo_b, hi_b = fr_uni["coef"][mask][0], fr_uni["ci_low"][mask][0], fr_uni["ci_high"][mask][0]
                         or_str = f"{np.exp(b):.3f} ({np.exp(lo_b):.3f}–{np.exp(hi_b):.3f}) [Firth]"
                     except Exception:
+                        # Firth de başarısızsa "NE" yaz
                         or_str = "NE (unstable/separation)"
                 else:
+                    # Stabil ise klasik Wald OR(CI)
                     or_str = f"{OR:.3f} ({lo:.3f}–{hi:.3f})"
             else:
-                # çok düzeyli kategorik: tek OR yok → makalede genelde seviyeler ayrı verilir
+                # Çok düzeyli kategorik: tek OR yok → "NA"
                 or_str = "NA"
 
             uni_rows.append({
