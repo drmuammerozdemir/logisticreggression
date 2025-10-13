@@ -234,62 +234,50 @@ def _clean_term_for_forest(t):
 def make_forest_plot_classic(df_or, title="Forest Plot (OR, 95% CI)"):
     """
     df_or sütunları: ['label','OR','OR_low','OR_high','p']  (p opsiyonel)
-    - Log x-ekseni
-    - Nokta: kare (s=40), CI: yatay çizgi
-    - Sağ tarafta "OR (95% CI) [p]" metni
     """
     import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
 
-    data = df_or.replace([np.inf, -np.inf], np.nan).dropna(subset=["OR","OR_low","OR_high"]).copy()
-    if data.empty:
+    df = df_or.replace([np.inf, -np.inf], np.nan).dropna(subset=["OR","OR_low","OR_high"]).copy()
+    if df.empty:
         return None
 
-    # Yukarıdan aşağı sıralansın
-    data = data.sort_values("OR", ascending=True).reset_index(drop=True)
-    y = np.arange(len(data))
+    df = df.sort_values("OR").reset_index(drop=True)
+    y = np.arange(len(df))
 
-    fig = plt.figure(figsize=(8, max(3.5, 0.55*len(data)+1)))
-    ax = plt.gca()
+    fig, ax = plt.subplots(figsize=(8, max(3.5, 0.55*len(df)+1)))
 
-    # CI çizgileri ve kare noktalar (tek renk)
-    for i, r in data.iterrows():
-        ax.plot([r["OR_low"], r["OR_high"]], [y[i], y[i]], lw=2, color="black")
-        ax.scatter(r["OR"], y[i], marker="s", s=40, color="black", zorder=3)
+    # CI çizgileri ve kare noktalar
+    for i, r in df.iterrows():
+        ax.plot([r["OR_low"], r["OR_high"]], [y[i], y[i]], color="black", lw=2)
+        ax.scatter(r["OR"], y[i], color="black", s=40, marker="s", zorder=3)
 
-    # Referans çizgi
-    ax.axvline(1.0, ls="--", lw=1, color="gray")
+    # Referans çizgi (OR=1)
+    ax.axvline(1, ls="--", lw=1, color="gray")
 
-    # Y etiketleri
+    # Y ekseni
     ax.set_yticks(y)
-    ax.set_yticklabels(data["label"])
+    ax.set_yticklabels(df["label"])
     ax.invert_yaxis()
-
-    # Log x-ekseni ve makul sınırlar
     ax.set_xscale("log")
-    xmin = max(1e-3, float(np.nanmin(data["OR_low"])) * 0.8)
-    xmax = min(1e3,  float(np.nanmax(data["OR_high"])) * 1.2)
-    if xmin >= xmax: xmin, xmax = 0.5, 2.0
-    ax.set_xlim(xmin, xmax)
-
-    # Temiz tema
-    ax.grid(axis="x", which="both", ls=":", lw=0.6, color="#BBBBBB")
     ax.set_xlabel("Odds Ratio (log-scale)")
     ax.set_title(title, pad=10)
+    ax.grid(axis="x", which="both", ls=":", lw=0.6, color="#BBBBBB")
 
     # Sağ tarafa metin sütunu: OR (95% CI) [p]
-    # Konum için ikinci eksen kullan
     ax2 = ax.twinx()
     ax2.set_ylim(ax.get_ylim())
     ax2.set_yticks(y)
-    right_text = []
-    for _, r in data.iterrows():
+    texts = []
+    for _, r in df.iterrows():
         ci_txt = f"{r['OR']:.2f} ({r['OR_low']:.2f}–{r['OR_high']:.2f})"
         if "p" in r and pd.notna(r["p"]):
             ptxt = "<0.001" if r["p"] < 0.001 else f"{r['p']:.3f}"
             ci_txt += f"  [p={ptxt}]"
-        right_text.append(ci_txt)
-    ax2.set_yticklabels(right_text)
-    ax2.tick_params(axis='y', length=0)
+        texts.append(ci_txt)
+    ax2.set_yticklabels(texts)
+    ax2.tick_params(axis="y", length=0)
     ax2.set_ylabel("")
 
     plt.tight_layout()
@@ -442,7 +430,7 @@ if mode == "Binary (Logistic)":
             forest_df = multi_tab.copy()
             forest_df = forest_df[~forest_df["variable"].str.contains("Intercept", case=False, na=False)].copy()
 
-            # Etiket temizleyici (C(var)[T.x] -> var: x)
+            # C(var)[T.level] -> var: level
             def _clean_term_for_forest(t):
                 if isinstance(t, str) and t.startswith("C(") and ")[T." in t:
                     base = t.split("C(")[1].split(")")[0]
@@ -452,10 +440,10 @@ if mode == "Binary (Logistic)":
 
             forest_df["label"] = forest_df["variable"].map(_clean_term_for_forest)
             forest_df = forest_df.assign(
-                OR = forest_df["OR"].astype(float),
-                OR_low = forest_df["OR_low"].astype(float),
-                OR_high = forest_df["OR_high"].astype(float),
-                p = multi_tab.set_index("variable")["p"].reindex(forest_df["variable"]).values
+                OR=forest_df["OR"].astype(float),
+                OR_low=forest_df["OR_low"].astype(float),
+                OR_high=forest_df["OR_high"].astype(float),
+                p=multi_tab.set_index("variable")["p"].reindex(forest_df["variable"]).values
             )[["label","OR","OR_low","OR_high","p"]]
 
             fig_forest = make_forest_plot_classic(forest_df, title="Multivariate OR (95% CI)")
