@@ -125,6 +125,17 @@ def compute_youden(fpr, tpr, thr):
         "index": idx
     }
 
+def _wilson_ci(success, total, alpha=0.05):
+    """İkili orana Wilson (%95 GA) — success/total için (lo, hi) döner."""
+    if total == 0:
+        return (np.nan, np.nan)
+    p = success / total
+    z = norm.ppf(1 - alpha/2)
+    den = 1 + z**2/total
+    center = (p + z**2/(2*total)) / den
+    half = (z*np.sqrt(p*(1-p)/total + z**2/(4*total**2))) / den
+    return max(0.0, center - half), min(1.0, center + half)
+
 # ---- Unstable kontrolü (uçuk/sonsuz CI vs.) ----
 def _is_unstable(orv, lo, hi, fold_limit=1e6):
     if not (np.isfinite(orv) and np.isfinite(lo) and np.isfinite(hi)):
@@ -413,6 +424,43 @@ if mode == "Binary (Logistic)":
             plt.title('ROC Curve')
             plt.legend(loc="lower right")
             st.pyplot(fig, use_container_width=True)
+
+            # === ROC Altı Özet Tablo (AUC CI, p; Youden cut-off; Sens/Spec/PPV/NPV + %95 GA) ===
+            # AUC için DeLong CI ve p (H0: AUC=0.5)
+            auc_m, lo_auc, hi_auc, se_auc = delong_ci(y_true, y_prob)
+            z_auc = (auc_m - 0.5) / se_auc if se_auc > 0 else np.nan
+            p_auc = 2 * (1 - norm.cdf(abs(z_auc))) if np.isfinite(z_auc) else np.nan
+
+            # Youden’a göre en iyi kesim ve o kesimde karışıklık matrisi
+            best = compute_youden(fpr, tpr, thr)
+            cut_for_table = float(np.clip(best["threshold"], 0.0, 1.0))
+            y_pred_cut = (y_prob >= cut_for_table).astype(int)
+            tn, fp, fn, tp = confusion_matrix(y_true, y_pred_cut, labels=[0,1]).ravel()
+
+            # Oranlar ve Wilson %95 GA
+            sens = tp / (tp + fn) if (tp + fn) else np.nan
+            spec = tn / (tn + fp) if (tn + fp) else np.nan
+            ppv  = tp / (tp + fp) if (tp + fp) else np.nan
+            npv  = tn / (tn + fn) if (tn + fn) else np.nan
+
+            sens_lo, sens_hi = _wilson_ci(tp, tp + fn)
+            spec_lo, spec_hi = _wilson_ci(tn, tn + fp)
+            ppv_lo,  ppv_hi  = _wilson_ci(tp, tp + fp) if (tp + fp) else (np.nan, np.nan)
+            npv_lo,  npv_hi  = _wilson_ci(tn, tn + fn) if (tn + fn) else (np.nan, np.nan)
+
+            # Görsel tablo (yüzdeleri resimdeki gibi tam sayıya yuvarlayarak)
+            summary_rows = [
+                ("AUC (95% CI)",          f"{auc_m:.3f} ({lo_auc:.3f}–{hi_auc:.3f})"),
+                ("p-Value",               "<0.001" if (pd.notna(p_auc) and p_auc < 0.001) else f"{p_auc:.4f}"),
+                ("Cut-off",               f"≥ {cut_for_table:.2g}"),
+                ("Sensitivity (95% CI)",  f"{sens*100:.0f} ({sens_lo*100:.1f}–{sens_hi*100:.1f})"),
+                ("Specificity (95% CI)",  f"{spec*100:.0f} ({spec_lo*100:.1f}–{spec_hi*100:.1f})"),
+                ("PPV (95% CI)",          f"{ppv*100:.0f} ({ppv_lo*100:.1f}–{ppv_hi*100:.1f})" if pd.notna(ppv) else "NA"),
+                ("NPV (95% CI)",          f"{npv*100:.0f} ({npv_lo*100:.1f}–{npv_hi*100:.1f})" if pd.notna(npv) else "NA"),
+            ]
+            roc_summary_df = pd.DataFrame(summary_rows, columns=["", ""])
+            st.dataframe(roc_summary_df, use_container_width=True)
+
 
             # ===== Firth bias-reduced logistic (opsiyonel) =====
             st.subheader("🛡️ Firth (bias-reduced) Lojistik – Ayrışmaya dayanıklı")
