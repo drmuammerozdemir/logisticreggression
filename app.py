@@ -458,7 +458,7 @@ if mode == "Binary (Logistic)":
                 ("PPV (95% CI)",          f"{ppv*100:.0f} ({ppv_lo*100:.1f}–{ppv_hi*100:.1f})" if pd.notna(ppv) else "NA"),
                 ("NPV (95% CI)",          f"{npv*100:.0f} ({npv_lo*100:.1f}–{npv_hi*100:.1f})" if pd.notna(npv) else "NA"),
             ]
-            roc_summary_df = pd.DataFrame(summary_rows, columns=["", ""])
+            roc_summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
             st.dataframe(roc_summary_df, use_container_width=True)
 
 
