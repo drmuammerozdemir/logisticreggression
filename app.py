@@ -231,58 +231,95 @@ def _clean_term_for_forest(t):
         return f"{base}: {lev}"
     return t
 
-def make_forest_plot_linear(df_or, title="Forest Plot (OR, 95% CI)"):
+def make_forest_plot_linear_clip(df_or, title="Forest Plot (OR, 95% CI)", xmin=None, xmax=None):
     """
-    df_or sütunları: ['label','OR','OR_low','OR_high','p']
-    Lineer x-ekseni (ör. 0-2), kalın dikey çizgi (OR=1)
+    df_or: ['label','OR','OR_low','OR_high','p']  (p opsiyonel)
+    - Lineer x-ekseni
+    - CI eksen dışına taşıyorsa ok başı ile işaretler
+    - xmin/xmax None ise robust (5–95 pct) limit + %20 pay ve OR=1'i kapsayacak şekilde ayarlanır
     """
-    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
+    import matplotlib.pyplot as plt
 
     df = df_or.replace([np.inf, -np.inf], np.nan).dropna(subset=["OR","OR_low","OR_high"]).copy()
     if df.empty:
-        return None
+        return None, (np.nan, np.nan), []
+
+    # Robust varsayılan limitler
+    if xmin is None or xmax is None:
+        vals = np.r_[df["OR_low"].values, df["OR_high"].values]
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            xmin, xmax = 0.5, 2.0
+        else:
+            lo = np.nanpercentile(vals, 5)
+            hi = np.nanpercentile(vals, 95)
+            pad_lo, pad_hi = 0.8, 1.2
+            xmin = lo*pad_lo if xmin is None else xmin
+            xmax = hi*pad_hi if xmax is None else xmax
+            xmin = max(xmin, 0.01)
+            # OR=1 mutlaka görünür olsun
+            xmin = min(xmin, 0.9)
+            xmax = max(xmax, 1.1)
 
     df = df.sort_values("OR", ascending=True).reset_index(drop=True)
     y = np.arange(len(df))
 
-    fig, ax = plt.subplots(figsize=(7, max(3.2, 0.55*len(df)+1)))
+    fig, ax = plt.subplots(figsize=(7.5, max(3.2, 0.6*len(df)+1)))
 
-    # CI çizgileri ve marker
+    truncated = []  # hangi değişken kesildi listesi
+
     for i, r in df.iterrows():
-        ax.plot([r["OR_low"], r["OR_high"]], [y[i], y[i]], color="black", lw=2.5)
-        ax.scatter(r["OR"], y[i], color="black", s=50, marker="s", zorder=3)
+        L, M, H = float(r["OR_low"]), float(r["OR"]), float(r["OR_high"])
+        # clip
+        left_clip  = L < xmin
+        right_clip = H > xmax
+        Lc = max(L, xmin)
+        Hc = min(H, xmax)
+
+        # CI çizgisi
+        ax.plot([Lc, Hc], [y[i], y[i]], color="black", lw=2.5)
+        # orta nokta (kare)
+        if xmin <= M <= xmax:
+            ax.scatter(M, y[i], color="black", s=55, marker="s", zorder=3)
+        # ok başları
+        if left_clip:
+            ax.scatter(xmin, y[i], marker="<", s=70, color="black", zorder=3)
+            truncated.append((r["label"], "left"))
+        if right_clip:
+            ax.scatter(xmax, y[i], marker=">", s=70, color="black", zorder=3)
+            truncated.append((r["label"], "right"))
 
     # OR=1 kalın dikey çizgi
-    ax.axvline(1, color="black", lw=2)
+    ax.axvline(1.0, color="black", lw=2)
 
     # Y ekseni
     ax.set_yticks(y)
     ax.set_yticklabels(df["label"], fontsize=11)
     ax.invert_yaxis()
     ax.set_xlabel("Odds Ratio", fontsize=11)
-    ax.set_title(title, fontsize=13, pad=10)
-    ax.set_xlim(0.4, 2.0)
+    ax.set_title(title, fontsize=15, pad=10)
+    ax.set_xlim(xmin, xmax)
     ax.grid(False)
 
-    # Sağ tarafa metin sütunu: OR (95% CI) ve p
+    # Sağ metin sütunu (OR (95% CI)  p)
     ax2 = ax.twinx()
     ax2.set_ylim(ax.get_ylim())
     ax2.set_yticks(y)
     texts = []
     for _, r in df.iterrows():
         ci_txt = f"{r['OR']:.3f} ({r['OR_low']:.3f}-{r['OR_high']:.3f})"
-        ptxt = ""
         if "p" in r and pd.notna(r["p"]):
             ptxt = "<0.001" if r["p"] < 0.001 else f"{r['p']:.3f}"
-        texts.append(f"{ci_txt}    {ptxt}")
+            ci_txt = f"{ci_txt}    {ptxt}"
+        texts.append(ci_txt)
     ax2.set_yticklabels(texts, fontsize=11)
     ax2.tick_params(axis="y", length=0)
     ax2.set_ylabel("")
 
     plt.tight_layout()
-    return fig
+    return fig, (xmin, xmax), truncated
 
 # ===================== 1) Veri Yükleme ===================== #
 
@@ -427,28 +464,28 @@ if mode == "Binary (Logistic)":
             st.subheader("Model Katsayıları")
             st.dataframe(pretty, use_container_width=True)
 
-            # === Forest plot (Multivariate OR, 95% CI, linear scale) ===
-            forest_df = multi_tab.copy()
-            forest_df = forest_df[~forest_df["variable"].str.contains("Intercept", case=False, na=False)].copy()
+            # forest_df: ["label","OR","OR_low","OR_high","p"]
 
-            def _clean_term_for_forest(t):
-                if isinstance(t, str) and t.startswith("C(") and ")[T." in t:
-                    base = t.split("C(")[1].split(")")[0]
-                    lev = t.split("[T.")[1].rstrip("]")
-                    return f"{base}: {lev}"
-                return t
+            # (opsiyonel) kullanıcıya eksen aralığı verelim:
+            # robust default'ları önce bir önizlemeden al
+            fig_tmp, (def_lo, def_hi), _ = make_forest_plot_linear_clip(forest_df, title="")
+            # slider: 0.01–100 arası esnek; default robust
+            lo_hi = st.slider("Forest x-ekseni (OR aralığı)", 0.01, 100.0,
+                              (float(max(0.01, def_lo)), float(min(100.0, def_hi))), step=0.01)
 
-            forest_df["label"] = forest_df["variable"].map(_clean_term_for_forest)
-            forest_df = forest_df.assign(
-                OR=forest_df["OR"].astype(float),
-                OR_low=forest_df["OR_low"].astype(float),
-                OR_high=forest_df["OR_high"].astype(float),
-                p=multi_tab.set_index("variable")["p"].reindex(forest_df["variable"]).values
-            )[["label","OR","OR_low","OR_high","p"]]
-
-            fig_forest = make_forest_plot_linear(forest_df, title="Multivariate OR (95% CI)")
+            fig_forest, (xmin, xmax), truncated = make_forest_plot_linear_clip(
+                forest_df, title="Multivariate OR (95% CI)", xmin=lo_hi[0], xmax=lo_hi[1]
+            )
             if fig_forest is not None:
                 st.pyplot(fig_forest, use_container_width=True)
+                if truncated:
+                    # kesilenleri kullanıcıya söyle
+                    lefts  = [lab for lab, side in truncated if side == "left"]
+                    rights = [lab for lab, side in truncated if side == "right"]
+                    note = []
+                    if lefts:  note.append("sol ucu kesilen: " + ", ".join(lefts))
+                    if rights: note.append("sağ ucu kesilen: " + ", ".join(rights))
+                    st.caption("Not: CI’ları eksen dışında kalan değişkenler ok başı ile gösterildi (" + "; ".join(note) + ").")
             else:
                 st.info("Forest plot için uygun (sonlu) OR ve güven aralığı bulunamadı.")
 
