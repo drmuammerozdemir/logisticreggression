@@ -366,6 +366,20 @@ if mode == "Binary (Logistic)":
             st.subheader("Model Katsayıları")
             st.dataframe(pretty, use_container_width=True)
 
+            # === Forest plot (Multivariate OR) ===
+            forest_df = multi_tab.copy()
+            # Intercept'i at ve etiketleri temizle
+            forest_df = forest_df[~forest_df["variable"].str.contains("Intercept", case=False, na=False)].copy()
+            forest_df["label"] = forest_df["variable"].map(_clean_term_for_forest)
+            forest_df = forest_df[["label","OR","OR_low","OR_high"]]
+
+            fig_forest = make_forest_plot(forest_df, title="Multivariate OR (95% CI)")
+            if fig_forest is not None:
+                st.pyplot(fig_forest, use_container_width=True)
+            else:
+                st.info("Forest plot için uygun (sonlu) OR ve güven aralığı bulunamadı.")
+
+
             # AIC/BIC, McFadden R²
             llf = res_m.llf
             llnull = res_m.llnull if hasattr(res_m, 'llnull') else np.nan
