@@ -223,6 +223,61 @@ def hosmer_lemeshow(y_true, y_prob, g=10):
     pval = 1 - chi2_dist.cdf(chi2, df_hl)
     return chi2, pval, tbl.reset_index()
 
+def _clean_term_for_forest(t):
+    # C(var)[T.level] → var: level
+    if isinstance(t, str) and t.startswith("C(") and ")[T." in t:
+        base = t.split("C(")[1].split(")")[0]
+        lev = t.split("[T.")[1].rstrip("]")
+        return f"{base}: {lev}"
+    return t
+
+def make_forest_plot(df_or, title="Forest Plot (OR, 95% CI)"):
+    """
+    df_or: sütunları → ['label','OR','OR_low','OR_high']
+    """
+    import matplotlib.pyplot as plt
+    data = df_or.copy()
+    # Geçersizleri at
+    data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=["OR","OR_low","OR_high"])
+    if data.empty:
+        return None
+
+    # Sırala (OR büyüklüğüne göre)
+    data = data.sort_values("OR")
+    y_pos = np.arange(len(data))
+
+    fig = plt.figure(figsize=(7, max(3, 0.45*len(data)+1)))
+    # Nokta ve CI çiz
+    for i, (_, r) in enumerate(data.iterrows()):
+        plt.plot([r["OR_low"], r["OR_high"]], [y_pos[i], y_pos[i]], lw=2)
+        plt.scatter(r["OR"], y_pos[i], s=30, zorder=3)
+
+    # Dikey referans çizgi (OR=1)
+    plt.axvline(1.0, linestyle="--", linewidth=1)
+
+    # Y ekseni etiketleri
+    plt.yticks(y_pos, data["label"])
+    plt.gca().invert_yaxis()  # üstte en büyük
+
+    # Log-ölçek
+    plt.xscale("log")
+
+    # Otomatik x-limit (uç değerleri kırpmadan biraz pay)
+    xmin = float(np.nanmin(data["OR_low"])) if np.isfinite(np.nanmin(data["OR_low"])) else 0.1
+    xmax = float(np.nanmax(data["OR_high"])) if np.isfinite(np.nanmax(data["OR_high"])) else 10.0
+    # Aşırı durumlarda mantıklı pencereler:
+    xmin = max(xmin, 1e-3)
+    xmax = min(max(xmax, 1.5), 1e3)
+    if xmin >= xmax:  # nadir patoloji
+        xmin, xmax = 0.5, 2.0
+    plt.xlim(xmin, xmax)
+
+    plt.xlabel("Odds Ratio (log-scale)")
+    plt.title(title)
+    plt.tight_layout()
+    return fig
+
+
 # ===================== 1) Veri Yükleme ===================== #
 
 st.sidebar.header("1) Veri Yükle")
