@@ -231,52 +231,69 @@ def _clean_term_for_forest(t):
         return f"{base}: {lev}"
     return t
 
-def make_forest_plot(df_or, title="Forest Plot (OR, 95% CI)"):
+def make_forest_plot_classic(df_or, title="Forest Plot (OR, 95% CI)"):
     """
-    df_or: sütunları → ['label','OR','OR_low','OR_high']
+    df_or sütunları: ['label','OR','OR_low','OR_high','p']  (p opsiyonel)
+    - Log x-ekseni
+    - Nokta: kare (s=40), CI: yatay çizgi
+    - Sağ tarafta "OR (95% CI) [p]" metni
     """
     import matplotlib.pyplot as plt
-    data = df_or.copy()
-    # Geçersizleri at
-    data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=["OR","OR_low","OR_high"])
+
+    data = df_or.replace([np.inf, -np.inf], np.nan).dropna(subset=["OR","OR_low","OR_high"]).copy()
     if data.empty:
         return None
 
-    # Sırala (OR büyüklüğüne göre)
-    data = data.sort_values("OR")
-    y_pos = np.arange(len(data))
+    # Yukarıdan aşağı sıralansın
+    data = data.sort_values("OR", ascending=True).reset_index(drop=True)
+    y = np.arange(len(data))
 
-    fig = plt.figure(figsize=(7, max(3, 0.45*len(data)+1)))
-    # Nokta ve CI çiz
-    for i, (_, r) in enumerate(data.iterrows()):
-        plt.plot([r["OR_low"], r["OR_high"]], [y_pos[i], y_pos[i]], lw=2)
-        plt.scatter(r["OR"], y_pos[i], s=30, zorder=3)
+    fig = plt.figure(figsize=(8, max(3.5, 0.55*len(data)+1)))
+    ax = plt.gca()
 
-    # Dikey referans çizgi (OR=1)
-    plt.axvline(1.0, linestyle="--", linewidth=1)
+    # CI çizgileri ve kare noktalar (tek renk)
+    for i, r in data.iterrows():
+        ax.plot([r["OR_low"], r["OR_high"]], [y[i], y[i]], lw=2, color="black")
+        ax.scatter(r["OR"], y[i], marker="s", s=40, color="black", zorder=3)
 
-    # Y ekseni etiketleri
-    plt.yticks(y_pos, data["label"])
-    plt.gca().invert_yaxis()  # üstte en büyük
+    # Referans çizgi
+    ax.axvline(1.0, ls="--", lw=1, color="gray")
 
-    # Log-ölçek
-    plt.xscale("log")
+    # Y etiketleri
+    ax.set_yticks(y)
+    ax.set_yticklabels(data["label"])
+    ax.invert_yaxis()
 
-    # Otomatik x-limit (uç değerleri kırpmadan biraz pay)
-    xmin = float(np.nanmin(data["OR_low"])) if np.isfinite(np.nanmin(data["OR_low"])) else 0.1
-    xmax = float(np.nanmax(data["OR_high"])) if np.isfinite(np.nanmax(data["OR_high"])) else 10.0
-    # Aşırı durumlarda mantıklı pencereler:
-    xmin = max(xmin, 1e-3)
-    xmax = min(max(xmax, 1.5), 1e3)
-    if xmin >= xmax:  # nadir patoloji
-        xmin, xmax = 0.5, 2.0
-    plt.xlim(xmin, xmax)
+    # Log x-ekseni ve makul sınırlar
+    ax.set_xscale("log")
+    xmin = max(1e-3, float(np.nanmin(data["OR_low"])) * 0.8)
+    xmax = min(1e3,  float(np.nanmax(data["OR_high"])) * 1.2)
+    if xmin >= xmax: xmin, xmax = 0.5, 2.0
+    ax.set_xlim(xmin, xmax)
 
-    plt.xlabel("Odds Ratio (log-scale)")
-    plt.title(title)
+    # Temiz tema
+    ax.grid(axis="x", which="both", ls=":", lw=0.6, color="#BBBBBB")
+    ax.set_xlabel("Odds Ratio (log-scale)")
+    ax.set_title(title, pad=10)
+
+    # Sağ tarafa metin sütunu: OR (95% CI) [p]
+    # Konum için ikinci eksen kullan
+    ax2 = ax.twinx()
+    ax2.set_ylim(ax.get_ylim())
+    ax2.set_yticks(y)
+    right_text = []
+    for _, r in data.iterrows():
+        ci_txt = f"{r['OR']:.2f} ({r['OR_low']:.2f}–{r['OR_high']:.2f})"
+        if "p" in r and pd.notna(r["p"]):
+            ptxt = "<0.001" if r["p"] < 0.001 else f"{r['p']:.3f}"
+            ci_txt += f"  [p={ptxt}]"
+        right_text.append(ci_txt)
+    ax2.set_yticklabels(right_text)
+    ax2.tick_params(axis='y', length=0)
+    ax2.set_ylabel("")
+
     plt.tight_layout()
     return fig
-
 
 # ===================== 1) Veri Yükleme ===================== #
 
@@ -421,19 +438,31 @@ if mode == "Binary (Logistic)":
             st.subheader("Model Katsayıları")
             st.dataframe(pretty, use_container_width=True)
 
-            # === Forest plot (Multivariate OR) ===
+            # === Forest plot (Multivariate OR, 95% CI) ===
             forest_df = multi_tab.copy()
-            # Intercept'i at ve etiketleri temizle
             forest_df = forest_df[~forest_df["variable"].str.contains("Intercept", case=False, na=False)].copy()
-            forest_df["label"] = forest_df["variable"].map(_clean_term_for_forest)
-            forest_df = forest_df[["label","OR","OR_low","OR_high"]]
 
-            fig_forest = make_forest_plot(forest_df, title="Multivariate OR (95% CI)")
+            # Etiket temizleyici (C(var)[T.x] -> var: x)
+            def _clean_term_for_forest(t):
+                if isinstance(t, str) and t.startswith("C(") and ")[T." in t:
+                    base = t.split("C(")[1].split(")")[0]
+                    lev = t.split("[T.")[1].rstrip("]")
+                    return f"{base}: {lev}"
+                return t
+
+            forest_df["label"] = forest_df["variable"].map(_clean_term_for_forest)
+            forest_df = forest_df.assign(
+                OR = forest_df["OR"].astype(float),
+                OR_low = forest_df["OR_low"].astype(float),
+                OR_high = forest_df["OR_high"].astype(float),
+                p = multi_tab.set_index("variable")["p"].reindex(forest_df["variable"]).values
+            )[["label","OR","OR_low","OR_high","p"]]
+
+            fig_forest = make_forest_plot_classic(forest_df, title="Multivariate OR (95% CI)")
             if fig_forest is not None:
                 st.pyplot(fig_forest, use_container_width=True)
             else:
                 st.info("Forest plot için uygun (sonlu) OR ve güven aralığı bulunamadı.")
-
 
             # AIC/BIC, McFadden R²
             llf = res_m.llf
