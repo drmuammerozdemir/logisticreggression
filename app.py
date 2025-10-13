@@ -463,6 +463,24 @@ if mode == "Binary (Logistic)":
             pretty = multi_tab[["variable", "OR (95% GA)", "p"]].copy()
             st.subheader("Model Katsayıları")
             st.dataframe(pretty, use_container_width=True)
+            # === Forest Plot (Multivariate OR, 95% CI, hazırlık) ===
+            forest_df = multi_tab.copy()
+            forest_df = forest_df[~forest_df["variable"].str.contains("Intercept", case=False, na=False)].copy()
+
+            def _clean_term_for_forest(t):
+                if isinstance(t, str) and t.startswith("C(") and ")[T." in t:
+                    base = t.split("C(")[1].split(")")[0]
+                    lev = t.split("[T.")[1].rstrip("]")
+                    return f"{base}: {lev}"
+                return t
+
+            forest_df["label"] = forest_df["variable"].map(_clean_term_for_forest)
+            forest_df = forest_df.assign(
+                OR=forest_df["OR"].astype(float),
+                OR_low=forest_df["OR_low"].astype(float),
+                OR_high=forest_df["OR_high"].astype(float),
+                p=multi_tab.set_index("variable")["p"].reindex(forest_df["variable"]).values
+            )[["label","OR","OR_low","OR_high","p"]]
 
             # forest_df: ["label","OR","OR_low","OR_high","p"]
 
