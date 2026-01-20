@@ -102,7 +102,6 @@ def extract_or_table(res):
     out["OR_high"] = np.exp(out["ci_high"])
     return out.reset_index().rename(columns={"index": "variable"})
 
-# --- EKLENECEK KISIM ---
 def extract_rrr_table(res, col_idx, class_name):
     # Multinomial sonuçlarını (RRR) çeken yardımcı fonksiyon
     params = res.params.iloc[:, col_idx]
@@ -124,7 +123,6 @@ def extract_rrr_table(res, col_idx, class_name):
     df_out["RRR_high"] = np.exp(df_out["ci_high"])
     df_out["Class"] = class_name
     return df_out
-# -----------------------
 
 def make_confusion(y_true, y_prob, threshold=0.5):
     y_pred = (y_prob >= threshold).astype(int)
@@ -361,7 +359,6 @@ st.dataframe(df.head())
 # ===================== 2) Model Tipi ve Değişken Seçimi ===================== #
 
 st.sidebar.header("2) Model Tipi")
-# --- DEĞİŞTİRİLECEK KISIM ---
 mode = st.sidebar.selectbox("Seçin", [
     "Binary (Logistic)", 
     "Continuous (Linear)", 
@@ -964,8 +961,6 @@ elif mode == "Continuous (Linear)":
     else:
         st.info("Multivariate için en az bir değişken seçin.")
 
-# --- EKLENECEK BÜYÜK BLOK (EN SONA YAPIŞTIR) ---
-
 elif mode == "Multinomial (Logistic)":
     # --------- MULTINOMIAL --------- #
     # 1. Seçimler
@@ -991,8 +986,7 @@ elif mode == "Multinomial (Logistic)":
         
         st.header("🔹 Multinomial Logistic Regression")
         
-        # 2. Veri Hazırlığı (HATA DÜZELTİCİ KISIM)
-        # Statsmodels için referansı veri setinde en başa alıyoruz.
+        # 2. Veri Hazırlığı
         use_cols = [dv] + ivs
         work = df[use_cols].dropna().copy()
         
@@ -1009,7 +1003,6 @@ elif mode == "Multinomial (Logistic)":
         work[dv] = pd.Categorical(work[dv], categories=unique_cats, ordered=True)
         
         # 3. Formül Oluşturma
-        # Bağımlı değişken için C() kullanmıyoruz, Pandas ile hallettik.
         terms = []
         for v in ivs:
             if v in cat_ref:
@@ -1029,88 +1022,6 @@ elif mode == "Multinomial (Logistic)":
             st.caption("Not: Katsayılar Relative Risk Ratio (RRR) olarak verilmiştir.")
             
             # Sonuçları sekmelere böl (Her sınıf vs Referans)
-            # Parametre sütun isimleri (Karşılaştırılan sınıflar)
-            # Statsmodels mnlogit çıktısında params sütunları referans hariç diğer sınıflardır.
-            comp_classes = res.params.columns.tolist() 
-            tabs = st.tabs([f"{c} vs {ref_cat}" for c in comp_classes])
-            
-            all_dfs = []
-            for idx, cls_name in enumerate(comp_classes):
-                with tabs[idx]:
-                    tbl = extract_rrr_table(res, idx, cls_name)
-                    # Format
-                    tbl["RRR (95% CI)"] = tbl.apply(lambda r: f"{r['RRR']:.3f} ({r['RRR_low']:.3f}–{r['RRR_high']:.3f})", axis=1)
-                    tbl["p"] = tbl["p"].apply(lambda p: "<0.001" if p < 0.001 else f"{p:.3f}")
-                    
-                    st.dataframe(tbl[["variable", "RRR (95% CI)", "p"]], use_container_width=True)
-                    all_dfs.append(tbl)
-            
-            if all_dfs:
-                final_res = pd.concat(all_dfs, ignore_index=True)
-                st.download_button("Tüm Sonuçlar (CSV)", final_res.to_csv(index=False).encode("utf-8"), "multinomial_results.csv")
-                
-        except Exception as e:
-            st.error(f"Multinomial Model Hatası: {e}")
-            st.warning("Değişken sayınız örneklem sayısına göre çok fazla olabilir veya sınıflarda yeterli dağılım yok.")
-    else:
-        st.info("Lütfen bağımsız değişken seçin.")
-        
-st.header("🔹 Multinomial Logistic Regression")
-        
-        # --- DÜZELTME BAŞLANGICI ---
-        
-        # 1. Veriyi hazırla: Referans kategoriyi belirle
-        # Statsmodels MNLogit, kategorik değişkenin "ilk" seviyesini referans kabul eder.
-        # Bu yüzden Pandas kullanarak seçilen referansı listenin en başına alıyoruz.
-        
-        work = df[use_cols].dropna().copy()
-        
-        # Hedef değişkeni string'e çevir (garanti olsun)
-        work[dv] = work[dv].astype(str)
-        ref_cat = str(ref_cat)
-        
-        # Kategorileri sırala: Referans en başa, diğerleri arkasına
-        unique_cats = sorted(work[dv].unique())
-        if ref_cat in unique_cats:
-            unique_cats.remove(ref_cat)
-            unique_cats.insert(0, ref_cat) # Referansı indeksi 0 (ilk) yap
-        
-        # Pandas Categorical tipine çevir
-        work[dv] = pd.Categorical(work[dv], categories=unique_cats, ordered=True)
-        
-        # 2. Formülü sadeleştir
-        # Artık formülde "C(dv, ...)" kullanmıyoruz çünkü veriyi yukarıda hazırladık.
-        # Sadece değişken ismini veriyoruz.
-        
-        terms = []
-        for v in ivs:
-            if v in cat_ref:
-                terms.append(f"C({v}, Treatment(reference='{cat_ref[v]}'))")
-            else:
-                terms.append(v)
-        rhs = " + ".join(terms)
-        
-        formula_str = f"{dv} ~ {rhs}"
-        
-        # --- DÜZELTME BİTİŞİ ---
-        
-        st.code(formula_str, language="python")
-        
-        try:
-            # Model kurulumu
-            model = smf.mnlogit(formula_str, data=work)
-            res = model.fit(disp=0, maxiter=500)
-            
-            # ... (Kodun geri kalanı, st.write, sekmeler vs. aynı kalabilir) ...
-        try:
-            model = smf.mnlogit(formula_str, data=work)
-            res = model.fit(disp=0, maxiter=500)
-            
-            st.write(f"**Pseudo R² (McFadden):** {res.prsquared:.4f}")
-            st.caption("Not: Katsayılar Relative Risk Ratio (RRR) olarak verilmiştir.")
-            
-            # Sonuçları sekmelere böl (Her sınıf vs Referans)
-            # Parametre sütun isimleri (Karşılaştırılan sınıflar)
             comp_classes = res.params.columns.tolist() 
             tabs = st.tabs([f"{c} vs {ref_cat}" for c in comp_classes])
             
@@ -1220,7 +1131,6 @@ elif mode == "Penalized (Lasso/Ridge)":
         except Exception as e:
             st.error(f"Hata: {e}")
             st.caption("Binary hedef için verinin 0/1 olduğundan ve kategorik değişkenlerin düzgün olduğundan emin olun.")
-# -----------------------
 
 # ===================== Raporlama İpuçları ===================== #
 st.markdown(
