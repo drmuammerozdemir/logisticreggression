@@ -850,7 +850,7 @@ if mode == "Binary (Logistic)":
     else:
         st.info("Multivariate için en az bir değişken seçin.")
 
-else:
+elif mode == "Continuous (Linear)":
     # --------- LINEAR (CONTINUOUS) --------- #
     dv = st.sidebar.selectbox("Bağımlı Değişken (Continuous)", options=all_cols)
     candidates = [c for c in all_cols if c != dv]
