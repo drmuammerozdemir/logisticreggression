@@ -968,6 +968,7 @@ elif mode == "Continuous (Linear)":
 
 elif mode == "Multinomial (Logistic)":
     # --------- MULTINOMIAL --------- #
+    # 1. Seçimler
     dv = st.sidebar.selectbox("Bağımlı Değişken (Kategorik > 2)", options=all_cols)
     levels = sorted([str(x) for x in df[dv].dropna().unique()])
     
@@ -987,6 +988,72 @@ elif mode == "Multinomial (Logistic)":
             lvs = sorted([str(x) for x in pd.Series(df[c]).dropna().unique()])
             ref = st.sidebar.selectbox(f"Referans – {c}", options=lvs, index=0, key=f"mn_ref_{c}")
             cat_ref[c] = ref
+        
+        st.header("🔹 Multinomial Logistic Regression")
+        
+        # 2. Veri Hazırlığı (HATA DÜZELTİCİ KISIM)
+        # Statsmodels için referansı veri setinde en başa alıyoruz.
+        use_cols = [dv] + ivs
+        work = df[use_cols].dropna().copy()
+        
+        # Hedef değişkeni string yap ve kategorik olarak sırala (Referans en başa)
+        work[dv] = work[dv].astype(str)
+        ref_cat_str = str(ref_cat)
+        
+        unique_cats = sorted(work[dv].unique())
+        if ref_cat_str in unique_cats:
+            unique_cats.remove(ref_cat_str)
+            unique_cats.insert(0, ref_cat_str) # Referansı ilk sıraya koy
+        
+        # Pandas Categorical tipine çevir
+        work[dv] = pd.Categorical(work[dv], categories=unique_cats, ordered=True)
+        
+        # 3. Formül Oluşturma
+        # Bağımlı değişken için C() kullanmıyoruz, Pandas ile hallettik.
+        terms = []
+        for v in ivs:
+            if v in cat_ref:
+                terms.append(f"C({v}, Treatment(reference='{cat_ref[v]}'))")
+            else:
+                terms.append(v)
+        rhs = " + ".join(terms)
+        formula_str = f"{dv} ~ {rhs}"
+        
+        st.code(formula_str, language="python")
+        
+        try:
+            model = smf.mnlogit(formula_str, data=work)
+            res = model.fit(disp=0, maxiter=500)
+            
+            st.write(f"**Pseudo R² (McFadden):** {res.prsquared:.4f}")
+            st.caption("Not: Katsayılar Relative Risk Ratio (RRR) olarak verilmiştir.")
+            
+            # Sonuçları sekmelere böl (Her sınıf vs Referans)
+            # Parametre sütun isimleri (Karşılaştırılan sınıflar)
+            # Statsmodels mnlogit çıktısında params sütunları referans hariç diğer sınıflardır.
+            comp_classes = res.params.columns.tolist() 
+            tabs = st.tabs([f"{c} vs {ref_cat}" for c in comp_classes])
+            
+            all_dfs = []
+            for idx, cls_name in enumerate(comp_classes):
+                with tabs[idx]:
+                    tbl = extract_rrr_table(res, idx, cls_name)
+                    # Format
+                    tbl["RRR (95% CI)"] = tbl.apply(lambda r: f"{r['RRR']:.3f} ({r['RRR_low']:.3f}–{r['RRR_high']:.3f})", axis=1)
+                    tbl["p"] = tbl["p"].apply(lambda p: "<0.001" if p < 0.001 else f"{p:.3f}")
+                    
+                    st.dataframe(tbl[["variable", "RRR (95% CI)", "p"]], use_container_width=True)
+                    all_dfs.append(tbl)
+            
+            if all_dfs:
+                final_res = pd.concat(all_dfs, ignore_index=True)
+                st.download_button("Tüm Sonuçlar (CSV)", final_res.to_csv(index=False).encode("utf-8"), "multinomial_results.csv")
+                
+        except Exception as e:
+            st.error(f"Multinomial Model Hatası: {e}")
+            st.warning("Değişken sayınız örneklem sayısına göre çok fazla olabilir veya sınıflarda yeterli dağılım yok.")
+    else:
+        st.info("Lütfen bağımsız değişken seçin.")
         
 st.header("🔹 Multinomial Logistic Regression")
         
