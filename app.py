@@ -15,6 +15,8 @@ from sklearn.metrics import roc_auc_score, confusion_matrix, roc_curve
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from delong import delong_ci, delong_roc_test
 from scipy.stats import norm
+from sklearn.linear_model import LassoCV, RidgeCV, ElasticNetCV, LogisticRegressionCV
+from sklearn.preprocessing import StandardScaler
 
 # Görselleştirme
 import matplotlib.pyplot as plt
@@ -99,6 +101,30 @@ def extract_or_table(res):
     out["OR_low"] = np.exp(out["ci_low"])
     out["OR_high"] = np.exp(out["ci_high"])
     return out.reset_index().rename(columns={"index": "variable"})
+
+# --- EKLENECEK KISIM ---
+def extract_rrr_table(res, col_idx, class_name):
+    # Multinomial sonuçlarını (RRR) çeken yardımcı fonksiyon
+    params = res.params.iloc[:, col_idx]
+    pvals = res.pvalues.iloc[:, col_idx]
+    # Standart hatalar üzerinden basit %95 GA hesabı
+    bse = res.bse.iloc[:, col_idx]
+    lower = params - 1.96 * bse
+    upper = params + 1.96 * bse
+    
+    df_out = pd.DataFrame({
+        "variable": params.index,
+        "coef": params.values,
+        "ci_low": lower.values,
+        "ci_high": upper.values,
+        "p": pvals.values
+    })
+    df_out["RRR"] = np.exp(df_out["coef"])
+    df_out["RRR_low"] = np.exp(df_out["ci_low"])
+    df_out["RRR_high"] = np.exp(df_out["ci_high"])
+    df_out["Class"] = class_name
+    return df_out
+# -----------------------
 
 def make_confusion(y_true, y_prob, threshold=0.5):
     y_pred = (y_prob >= threshold).astype(int)
@@ -335,7 +361,13 @@ st.dataframe(df.head())
 # ===================== 2) Model Tipi ve Değişken Seçimi ===================== #
 
 st.sidebar.header("2) Model Tipi")
-mode = st.sidebar.selectbox("Seçin", ["Binary (Logistic)", "Continuous (Linear)"])
+# --- DEĞİŞTİRİLECEK KISIM ---
+mode = st.sidebar.selectbox("Seçin", [
+    "Binary (Logistic)", 
+    "Continuous (Linear)", 
+    "Multinomial (Logistic)", 
+    "Penalized (Lasso/Ridge)"
+])
 
 all_cols = df.columns.tolist()
 
@@ -931,6 +963,168 @@ else:
             st.error(f"Linear model hatası: {e}")
     else:
         st.info("Multivariate için en az bir değişken seçin.")
+
+# --- EKLENECEK BÜYÜK BLOK (EN SONA YAPIŞTIR) ---
+
+elif mode == "Multinomial (Logistic)":
+    # --------- MULTINOMIAL --------- #
+    dv = st.sidebar.selectbox("Bağımlı Değişken (Kategorik > 2)", options=all_cols)
+    levels = sorted([str(x) for x in df[dv].dropna().unique()])
+    
+    if len(levels) < 3:
+        st.warning(f"Dikkat: '{dv}' değişkeninin {len(levels)} seviyesi var. Binary model daha uygun olabilir.")
+
+    ref_cat = st.sidebar.selectbox("Referans Kategori", options=levels, index=0)
+    
+    candidates = [c for c in all_cols if c != dv]
+    ivs = st.sidebar.multiselect("Bağımsız Değişkenler", options=candidates, default=candidates)
+    
+    if ivs:
+        # Kategorik tanımları
+        cat_vars = st.sidebar.multiselect("Kategorik Bağımsızlar", options=ivs, default=[c for c in ivs if df[c].dtype == 'object'])
+        cat_ref = {}
+        for c in cat_vars:
+            lvs = sorted([str(x) for x in pd.Series(df[c]).dropna().unique()])
+            ref = st.sidebar.selectbox(f"Referans – {c}", options=lvs, index=0, key=f"mn_ref_{c}")
+            cat_ref[c] = ref
+        
+        st.header("🔹 Multinomial Logistic Regression")
+        
+        # Formül oluşturma
+        terms = []
+        for v in ivs:
+            if v in cat_ref:
+                terms.append(f"C({v}, Treatment(reference='{cat_ref[v]}'))")
+            else:
+                terms.append(v)
+        rhs = " + ".join(terms)
+        # DV tarafında referans belirtimi
+        formula_str = f"C({dv}, Treatment(reference='{ref_cat}')) ~ {rhs}"
+        
+        st.code(formula_str, language="python")
+        
+        use_cols = [dv] + ivs
+        work = df[use_cols].dropna().copy()
+        
+        try:
+            model = smf.mnlogit(formula_str, data=work)
+            res = model.fit(disp=0, maxiter=500)
+            
+            st.write(f"**Pseudo R² (McFadden):** {res.prsquared:.4f}")
+            st.caption("Not: Katsayılar Relative Risk Ratio (RRR) olarak verilmiştir.")
+            
+            # Sonuçları sekmelere böl (Her sınıf vs Referans)
+            # Parametre sütun isimleri (Karşılaştırılan sınıflar)
+            comp_classes = res.params.columns.tolist() 
+            tabs = st.tabs([f"{c} vs {ref_cat}" for c in comp_classes])
+            
+            all_dfs = []
+            for idx, cls_name in enumerate(comp_classes):
+                with tabs[idx]:
+                    tbl = extract_rrr_table(res, idx, cls_name)
+                    # Format
+                    tbl["RRR (95% CI)"] = tbl.apply(lambda r: f"{r['RRR']:.3f} ({r['RRR_low']:.3f}–{r['RRR_high']:.3f})", axis=1)
+                    tbl["p"] = tbl["p"].apply(lambda p: "<0.001" if p < 0.001 else f"{p:.3f}")
+                    
+                    st.dataframe(tbl[["variable", "RRR (95% CI)", "p"]], use_container_width=True)
+                    all_dfs.append(tbl)
+            
+            if all_dfs:
+                final_res = pd.concat(all_dfs, ignore_index=True)
+                st.download_button("Tüm Sonuçlar (CSV)", final_res.to_csv(index=False).encode("utf-8"), "multinomial_results.csv")
+                
+        except Exception as e:
+            st.error(f"Multinomial Model Hatası: {e}")
+            st.warning("Değişken sayınız örneklem sayısına göre çok fazla olabilir veya sınıflarda yeterli dağılım yok.")
+    else:
+        st.info("Lütfen bağımsız değişken seçin.")
+
+elif mode == "Penalized (Lasso/Ridge)":
+    # --------- PENALIZED --------- #
+    st.header("🔹 Penalized Regression (Lasso / Ridge)")
+    st.markdown("Yüksek boyutlu verilerde değişken seçimi ve regularization için.")
+    
+    pen_type = st.sidebar.radio("Metod", ["Lasso (L1)", "Ridge (L2)", "ElasticNet"], horizontal=True)
+    target_type = st.sidebar.radio("Hedef Tipi", ["Continuous", "Binary"], horizontal=True)
+    
+    dv = st.sidebar.selectbox("Bağımlı Değişken", options=all_cols)
+    candidates = [c for c in all_cols if c != dv]
+    ivs = st.sidebar.multiselect("Bağımsız Değişkenler", options=candidates, default=candidates)
+    
+    if ivs:
+        work = df[[dv] + ivs].dropna().copy()
+        
+        # X ve y Hazırlığı (Dummies + Scaling)
+        y = work[dv].values
+        X_raw = work[ivs]
+        # Kategorikleri dummy'e çevir (drop_first=True ile)
+        X_encoded = pd.get_dummies(X_raw, drop_first=True)
+        feature_names = X_encoded.columns.tolist()
+        
+        # Scaling şarttır
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_encoded)
+        
+        # Model seçimi
+        try:
+            model = None
+            if target_type == "Continuous":
+                if pen_type == "Lasso (L1)":
+                    model = LassoCV(cv=5, random_state=42).fit(X_scaled, y)
+                elif pen_type == "Ridge (L2)":
+                    model = RidgeCV(cv=5).fit(X_scaled, y)
+                else:
+                    model = ElasticNetCV(cv=5, random_state=42).fit(X_scaled, y)
+            else: # Binary
+                penalty = 'l1' if pen_type == "Lasso (L1)" else 'l2'
+                if pen_type == "ElasticNet": penalty = 'elasticnet'
+                solver = 'liblinear' if penalty=='l1' else 'lbfgs'
+                if penalty=='elasticnet': solver='saga'
+                
+                # LogisticRegressionCV regularization path'i otomatik tarar
+                model = LogisticRegressionCV(cv=5, penalty=penalty, solver=solver, random_state=42, max_iter=1000).fit(X_scaled, y)
+
+            st.success(f"Model ({pen_type}) tamamlandı.")
+            
+            # Katsayıları çek
+            if target_type == "Continuous":
+                coefs = model.coef_
+                alpha_val = model.alpha_
+            else:
+                coefs = model.coef_[0]
+                alpha_val = model.C_[0] # Inverse regularization strength
+                
+            st.write(f"**Seçilen Alpha/Lambda:** {alpha_val:.4f}")
+            
+            coef_df = pd.DataFrame({"Feature": feature_names, "Coefficient": coefs})
+            coef_df["Abs"] = coef_df["Coefficient"].abs()
+            coef_df = coef_df.sort_values("Abs", ascending=False).drop(columns="Abs")
+            
+            # Görselleştirme
+            st.subheader("Katsayı Önem Düzeyleri")
+            st.dataframe(coef_df.style.background_gradient(cmap="coolwarm", subset=["Coefficient"]), use_container_width=True)
+            
+            # Sıfırlananlar (Lasso için önemli)
+            if pen_type != "Ridge (L2)":
+                zeros = coef_df[coef_df["Coefficient"].abs() < 1e-5]["Feature"].tolist()
+                if zeros:
+                    st.info(f"**Modelden çıkarılan (sıfırlanan) değişkenler:** {', '.join(zeros)}")
+                else:
+                    st.info("Hiçbir değişken sıfırlanmadı.")
+                    
+            fig, ax = plt.subplots(figsize=(8, len(feature_names)*0.3 + 2))
+            indices = np.argsort(coefs)
+            ax.barh(range(len(indices)), coefs[indices], align='center')
+            ax.set_yticks(range(len(indices)))
+            ax.set_yticklabels(np.array(feature_names)[indices])
+            ax.set_xlabel('Coefficient Value (Scaled)')
+            ax.set_title(f'{pen_type} Coefficients')
+            st.pyplot(fig)
+            
+        except Exception as e:
+            st.error(f"Hata: {e}")
+            st.caption("Binary hedef için verinin 0/1 olduğundan ve kategorik değişkenlerin düzgün olduğundan emin olun.")
+# -----------------------
 
 # ===================== Raporlama İpuçları ===================== #
 st.markdown(
