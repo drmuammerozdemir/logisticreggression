@@ -989,10 +989,36 @@ elif mode == "Multinomial (Logistic)":
         
         st.header("🔹 Multinomial Logistic Regression")
         
-        # 2. Veri Hazırlığı (Mapping Yöntemi - En Garantisi)
+        # 2. Veri Hazırlığı (Mapping + Sayısal Dönüşüm)
         use_cols = [dv] + ivs
-        work = df[use_cols].dropna().copy()
-        work[dv] = work[dv].astype(str) # Hedefi string yap
+        work = df[use_cols].copy() # dropna() 'yı en sona saklayalım
+        
+        # --- EKLENEN KISIM: Sayısal Dönüşüm ve Virgül Düzeltme ---
+        for col in ivs:
+            # Eğer değişken kategorik olarak işaretlenmediyse sayıya çevir
+            if col not in cat_vars:
+                # Veri tipi 'object' (yazı) ise virgülleri nokta yap
+                if work[col].dtype == 'object':
+                    work[col] = work[col].astype(str).str.replace(',', '.')
+                
+                # Sayıya çevir, hatalı olanları (metin kalanları) NaN yap
+                work[col] = pd.to_numeric(work[col], errors='coerce')
+        # ---------------------------------------------------------
+
+        # Şimdi NaN olan satırları temizle (Örn: "Saptanamadı" yazanlar silinir)
+        n_pre = len(work)
+        work = work.dropna()
+        n_post = len(work)
+        
+        if n_post == 0:
+            st.error("Hata: Veri seti tamamen boşaldı! Lütfen sayısal sütunlarınızda virgül/nokta sorunu olmadığından emin olun.")
+            st.stop()
+        elif (n_pre - n_post) > 0:
+            st.warning(f"{n_pre - n_post} satır, sayısal olmayan değerler veya eksik veriler nedeniyle analiz dışı bırakıldı.")
+
+        # Hedef değişkeni string yap (Mevcut kod devamı...)
+        work[dv] = work[dv].astype(str)
+        # ... (Kodun geri kalanı aynı şekilde devam edecek) ...
         
         # Mapping oluştur: Referans -> 0, Diğerleri -> 1, 2, 3...
         # Örn: Kontrol=0, Hasta1=1, Hasta2=2...
