@@ -962,11 +962,16 @@ elif mode == "Continuous (Linear)":
         st.info("Multivariate için en az bir değişken seçin.")
 
 elif mode == "Multinomial (Logistic)":
-    # --------- MULTINOMIAL --------- #
+    # --------- MULTINOMIAL (GÜÇLENDİRİLMİŞ VERSİYON) --------- #
+    # Bu blokta Scaling ve BFGS solver eklenmiştir.
+    
+    # Gerekli import (Eğer yukarıda yoksa diye buraya da ekledik)
+    from sklearn.preprocessing import StandardScaler
+
     # 1. Seçimler
     dv = st.sidebar.selectbox("Bağımlı Değişken (Kategorik > 2)", options=all_cols)
     
-    # NaN'ları temizle ve string'e çevir
+    # NaN temizliği ve Seviye Kontrolü
     clean_vals = df[dv].dropna().astype(str).unique()
     levels = sorted(clean_vals)
     
@@ -979,7 +984,7 @@ elif mode == "Multinomial (Logistic)":
     ivs = st.sidebar.multiselect("Bağımsız Değişkenler", options=candidates, default=candidates)
     
     if ivs:
-        # Kategorik tanımları (Bağımsız değişkenler için)
+        # Kategorik tanımları
         cat_vars = st.sidebar.multiselect("Kategorik Bağımsızlar", options=ivs, default=[c for c in ivs if df[c].dtype == 'object'])
         cat_ref = {}
         for c in cat_vars:
@@ -989,51 +994,50 @@ elif mode == "Multinomial (Logistic)":
         
         st.header("🔹 Multinomial Logistic Regression")
         
-        # 2. Veri Hazırlığı (Mapping + Sayısal Dönüşüm)
+        # 2. Veri Hazırlığı
         use_cols = [dv] + ivs
-        work = df[use_cols].copy() # dropna() 'yı en sona saklayalım
+        work = df[use_cols].copy()
         
-        # --- EKLENEN KISIM: Sayısal Dönüşüm ve Virgül Düzeltme ---
+        # --- ADIM A: Veri Temizliği ve Dönüşüm ---
         for col in ivs:
-            # Eğer değişken kategorik olarak işaretlenmediyse sayıya çevir
             if col not in cat_vars:
-                # Veri tipi 'object' (yazı) ise virgülleri nokta yap
+                # Virgül/Nokta temizliği
                 if work[col].dtype == 'object':
                     work[col] = work[col].astype(str).str.replace(',', '.')
-                
-                # Sayıya çevir, hatalı olanları (metin kalanları) NaN yap
                 work[col] = pd.to_numeric(work[col], errors='coerce')
-        # ---------------------------------------------------------
-
-        # Şimdi NaN olan satırları temizle (Örn: "Saptanamadı" yazanlar silinir)
-        n_pre = len(work)
+        
+        # NaN satırları at
+        n_before = len(work)
         work = work.dropna()
-        n_post = len(work)
+        n_after = len(work)
         
-        if n_post == 0:
-            st.error("Hata: Veri seti tamamen boşaldı! Lütfen sayısal sütunlarınızda virgül/nokta sorunu olmadığından emin olun.")
+        if n_after == 0:
+            st.error("HATA: Analiz edilecek veri kalmadı. Tüm satırlar NaN içeriyor olabilir.")
             st.stop()
-        elif (n_pre - n_post) > 0:
-            st.warning(f"{n_pre - n_post} satır, sayısal olmayan değerler veya eksik veriler nedeniyle analiz dışı bırakıldı.")
-
-        # Hedef değişkeni string yap (Mevcut kod devamı...)
-        work[dv] = work[dv].astype(str)
-        # ... (Kodun geri kalanı aynı şekilde devam edecek) ...
+            
+        # --- ADIM B: Scaling (Ölçekleme) ---
+        # Sayısal değerler çok büyükse model NaN verir. Bunu önlemek için Standardizasyon yapıyoruz.
+        scaler = StandardScaler()
+        for col in ivs:
+            if col not in cat_vars:
+                # Sütunu scale et (Z-score normalization)
+                work[col] = scaler.fit_transform(work[[col]])
         
-        # Mapping oluştur: Referans -> 0, Diğerleri -> 1, 2, 3...
-        # Örn: Kontrol=0, Hasta1=1, Hasta2=2...
+        if n_before - n_after > 0:
+            st.caption(f"Veri temizliği: {n_before - n_after} satır eksik veri nedeniyle çıkarıldı. Kalan: {n_after}")
+
+        # --- ADIM C: Hedef Değişken Mapping ---
+        work[dv] = work[dv].astype(str)
         unique_cats = sorted(work[dv].unique())
         if str(ref_cat) in unique_cats:
             unique_cats.remove(str(ref_cat))
         
-        # Listenin başı Referans, kalanı diğerleri
+        # Referans(0) + Diğerleri
         ordered_cats = [str(ref_cat)] + unique_cats
         mapping = {label: idx for idx, label in enumerate(ordered_cats)}
-        
-        # Hedef değişkeni INTEGER'a çeviriyoruz (Hata burada çözülüyor)
         work["__target_int__"] = work[dv].map(mapping)
         
-        # 3. Formül Oluşturma
+        # 3. Formül
         terms = []
         for v in ivs:
             if v in cat_ref:
@@ -1041,31 +1045,26 @@ elif mode == "Multinomial (Logistic)":
             else:
                 terms.append(v)
         rhs = " + ".join(terms)
-        
-        # Sol tarafa Integer kolonunu koyuyoruz
         formula_str = f"__target_int__ ~ {rhs}"
         
-        st.code(f"{dv} (Mapped) ~ {rhs}", language="python")
-        st.info(f"Referans Kategori (0): **{ref_cat}**")
+        st.code(f"{dv} (Ref: {ref_cat}) ~ {rhs}", language="python")
         
         try:
             # Model kurulumu
             model = smf.mnlogit(formula_str, data=work)
-            res = model.fit(disp=0, maxiter=500)
+            
+            # --- KRİTİK DEĞİŞİKLİK: method='bfgs' ---
+            # Varsayılan (Newton) yöntem tek değişkende patlayabilir. BFGS daha sağlamdır.
+            res = model.fit(method='bfgs', maxiter=1000, disp=0)
             
             st.write(f"**Pseudo R² (McFadden):** {res.prsquared:.4f}")
-            st.caption("Not: Katsayılar Relative Risk Ratio (RRR) olarak verilmiştir.")
+            st.info("Not: Sayısal değişkenler model kararlılığı için standardize edilmiştir (Z-Score).")
             
-            # Sonuçları sekmelere böl
-            # Statsmodels çıktısında kolonlar 0, 1, 2... diye gider (Referans hariç).
-            # Bizim 'ordered_cats' listemiz [Ref, Grup1, Grup2...] şeklindeydi.
-            # Model çıktısı ordered_cats[1:] (yani Ref hariç) sırasıyla eşleşir.
+            # Sonuçları Göster
+            output_labels = ordered_cats[1:] # 0 hariç diğerleri
             
-            output_labels = ordered_cats[1:] # 0. indeks referanstı, onu atladık.
-            
-            # Eğer modelin çıktı sayısı ile etiket sayısı tutmazsa (nadir durum), index kullan
+            # Güvenlik kontrolü
             if len(output_labels) != res.params.shape[1]:
-                 st.warning("Model çıktı sayısı ile kategori sayısı uyuşmadı. Sekmeler numara ile gösterilecek.")
                  output_labels = [f"Group {i}" for i in range(res.params.shape[1])]
 
             tabs = st.tabs([f"{lab} vs {ref_cat}" for lab in output_labels])
@@ -1073,10 +1072,9 @@ elif mode == "Multinomial (Logistic)":
             all_dfs = []
             for idx, label_name in enumerate(output_labels):
                 with tabs[idx]:
-                    # extract_rrr_table fonksiyonuna index'i gönderiyoruz
                     tbl = extract_rrr_table(res, idx, label_name)
                     
-                    # Format
+                    # Tablo Formatı
                     tbl["RRR (95% CI)"] = tbl.apply(lambda r: f"{r['RRR']:.3f} ({r['RRR_low']:.3f}–{r['RRR_high']:.3f})", axis=1)
                     tbl["p"] = tbl["p"].apply(lambda p: "<0.001" if p < 0.001 else f"{p:.3f}")
                     
@@ -1088,8 +1086,13 @@ elif mode == "Multinomial (Logistic)":
                 st.download_button("Tüm Sonuçlar (CSV)", final_res.to_csv(index=False).encode("utf-8"), "multinomial_results.csv")
                 
         except Exception as e:
-            st.error(f"Multinomial Model Hatası: {e}")
-            st.warning("Eğer 'Singular Matrix' hatası alırsanız, değişken sayısını azaltın veya kategorik değişkenlerinizde çok az veri olan grupları birleştirin.")
+            st.error("Model Hatası Oluştu.")
+            st.warning(f"Detay: {e}")
+            st.markdown("""
+            **Olası Sebepler:**
+            1. **Perfect Separation:** Seçilen değişken grupları 'mükemmel' ayırıyor olabilir. Bu durumda RRR sonsuza gider.
+            2. **Singular Matrix:** Değişkenler arasında çok yüksek korelasyon olabilir.
+            """)
     else:
         st.info("Lütfen bağımsız değişken seçin.")
 
