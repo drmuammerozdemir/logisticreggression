@@ -965,7 +965,10 @@ elif mode == "Multinomial (Logistic)":
     # --------- MULTINOMIAL --------- #
     # 1. Seçimler
     dv = st.sidebar.selectbox("Bağımlı Değişken (Kategorik > 2)", options=all_cols)
-    levels = sorted([str(x) for x in df[dv].dropna().unique()])
+    
+    # NaN'ları temizle ve string'e çevir
+    clean_vals = df[dv].dropna().astype(str).unique()
+    levels = sorted(clean_vals)
     
     if len(levels) < 3:
         st.warning(f"Dikkat: '{dv}' değişkeninin {len(levels)} seviyesi var. Binary model daha uygun olabilir.")
@@ -976,7 +979,7 @@ elif mode == "Multinomial (Logistic)":
     ivs = st.sidebar.multiselect("Bağımsız Değişkenler", options=candidates, default=candidates)
     
     if ivs:
-        # Kategorik tanımları
+        # Kategorik tanımları (Bağımsız değişkenler için)
         cat_vars = st.sidebar.multiselect("Kategorik Bağımsızlar", options=ivs, default=[c for c in ivs if df[c].dtype == 'object'])
         cat_ref = {}
         for c in cat_vars:
@@ -986,21 +989,23 @@ elif mode == "Multinomial (Logistic)":
         
         st.header("🔹 Multinomial Logistic Regression")
         
-        # 2. Veri Hazırlığı
+        # 2. Veri Hazırlığı (Mapping Yöntemi - En Garantisi)
         use_cols = [dv] + ivs
         work = df[use_cols].dropna().copy()
+        work[dv] = work[dv].astype(str) # Hedefi string yap
         
-        # Hedef değişkeni string yap ve kategorik olarak sırala (Referans en başa)
-        work[dv] = work[dv].astype(str)
-        ref_cat_str = str(ref_cat)
-        
+        # Mapping oluştur: Referans -> 0, Diğerleri -> 1, 2, 3...
+        # Örn: Kontrol=0, Hasta1=1, Hasta2=2...
         unique_cats = sorted(work[dv].unique())
-        if ref_cat_str in unique_cats:
-            unique_cats.remove(ref_cat_str)
-            unique_cats.insert(0, ref_cat_str) # Referansı ilk sıraya koy
+        if str(ref_cat) in unique_cats:
+            unique_cats.remove(str(ref_cat))
         
-        # Pandas Categorical tipine çevir
-        work[dv] = pd.Categorical(work[dv], categories=unique_cats, ordered=True)
+        # Listenin başı Referans, kalanı diğerleri
+        ordered_cats = [str(ref_cat)] + unique_cats
+        mapping = {label: idx for idx, label in enumerate(ordered_cats)}
+        
+        # Hedef değişkeni INTEGER'a çeviriyoruz (Hata burada çözülüyor)
+        work["__target_int__"] = work[dv].map(mapping)
         
         # 3. Formül Oluşturma
         terms = []
@@ -1010,25 +1015,41 @@ elif mode == "Multinomial (Logistic)":
             else:
                 terms.append(v)
         rhs = " + ".join(terms)
-        formula_str = f"{dv} ~ {rhs}"
         
-        st.code(formula_str, language="python")
+        # Sol tarafa Integer kolonunu koyuyoruz
+        formula_str = f"__target_int__ ~ {rhs}"
+        
+        st.code(f"{dv} (Mapped) ~ {rhs}", language="python")
+        st.info(f"Referans Kategori (0): **{ref_cat}**")
         
         try:
+            # Model kurulumu
             model = smf.mnlogit(formula_str, data=work)
             res = model.fit(disp=0, maxiter=500)
             
             st.write(f"**Pseudo R² (McFadden):** {res.prsquared:.4f}")
             st.caption("Not: Katsayılar Relative Risk Ratio (RRR) olarak verilmiştir.")
             
-            # Sonuçları sekmelere böl (Her sınıf vs Referans)
-            comp_classes = res.params.columns.tolist() 
-            tabs = st.tabs([f"{c} vs {ref_cat}" for c in comp_classes])
+            # Sonuçları sekmelere böl
+            # Statsmodels çıktısında kolonlar 0, 1, 2... diye gider (Referans hariç).
+            # Bizim 'ordered_cats' listemiz [Ref, Grup1, Grup2...] şeklindeydi.
+            # Model çıktısı ordered_cats[1:] (yani Ref hariç) sırasıyla eşleşir.
+            
+            output_labels = ordered_cats[1:] # 0. indeks referanstı, onu atladık.
+            
+            # Eğer modelin çıktı sayısı ile etiket sayısı tutmazsa (nadir durum), index kullan
+            if len(output_labels) != res.params.shape[1]:
+                 st.warning("Model çıktı sayısı ile kategori sayısı uyuşmadı. Sekmeler numara ile gösterilecek.")
+                 output_labels = [f"Group {i}" for i in range(res.params.shape[1])]
+
+            tabs = st.tabs([f"{lab} vs {ref_cat}" for lab in output_labels])
             
             all_dfs = []
-            for idx, cls_name in enumerate(comp_classes):
+            for idx, label_name in enumerate(output_labels):
                 with tabs[idx]:
-                    tbl = extract_rrr_table(res, idx, cls_name)
+                    # extract_rrr_table fonksiyonuna index'i gönderiyoruz
+                    tbl = extract_rrr_table(res, idx, label_name)
+                    
                     # Format
                     tbl["RRR (95% CI)"] = tbl.apply(lambda r: f"{r['RRR']:.3f} ({r['RRR_low']:.3f}–{r['RRR_high']:.3f})", axis=1)
                     tbl["p"] = tbl["p"].apply(lambda p: "<0.001" if p < 0.001 else f"{p:.3f}")
@@ -1042,7 +1063,7 @@ elif mode == "Multinomial (Logistic)":
                 
         except Exception as e:
             st.error(f"Multinomial Model Hatası: {e}")
-            st.warning("Değişken sayınız örneklem sayısına göre çok fazla olabilir veya sınıflarda yeterli dağılım yok.")
+            st.warning("Eğer 'Singular Matrix' hatası alırsanız, değişken sayısını azaltın veya kategorik değişkenlerinizde çok az veri olan grupları birleştirin.")
     else:
         st.info("Lütfen bağımsız değişken seçin.")
 
