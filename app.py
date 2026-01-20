@@ -988,9 +988,33 @@ elif mode == "Multinomial (Logistic)":
             ref = st.sidebar.selectbox(f"Referans – {c}", options=lvs, index=0, key=f"mn_ref_{c}")
             cat_ref[c] = ref
         
-        st.header("🔹 Multinomial Logistic Regression")
+st.header("🔹 Multinomial Logistic Regression")
         
-        # Formül oluşturma
+        # --- DÜZELTME BAŞLANGICI ---
+        
+        # 1. Veriyi hazırla: Referans kategoriyi belirle
+        # Statsmodels MNLogit, kategorik değişkenin "ilk" seviyesini referans kabul eder.
+        # Bu yüzden Pandas kullanarak seçilen referansı listenin en başına alıyoruz.
+        
+        work = df[use_cols].dropna().copy()
+        
+        # Hedef değişkeni string'e çevir (garanti olsun)
+        work[dv] = work[dv].astype(str)
+        ref_cat = str(ref_cat)
+        
+        # Kategorileri sırala: Referans en başa, diğerleri arkasına
+        unique_cats = sorted(work[dv].unique())
+        if ref_cat in unique_cats:
+            unique_cats.remove(ref_cat)
+            unique_cats.insert(0, ref_cat) # Referansı indeksi 0 (ilk) yap
+        
+        # Pandas Categorical tipine çevir
+        work[dv] = pd.Categorical(work[dv], categories=unique_cats, ordered=True)
+        
+        # 2. Formülü sadeleştir
+        # Artık formülde "C(dv, ...)" kullanmıyoruz çünkü veriyi yukarıda hazırladık.
+        # Sadece değişken ismini veriyoruz.
+        
         terms = []
         for v in ivs:
             if v in cat_ref:
@@ -998,14 +1022,19 @@ elif mode == "Multinomial (Logistic)":
             else:
                 terms.append(v)
         rhs = " + ".join(terms)
-        # DV tarafında referans belirtimi
-        formula_str = f"C({dv}, Treatment(reference='{ref_cat}')) ~ {rhs}"
+        
+        formula_str = f"{dv} ~ {rhs}"
+        
+        # --- DÜZELTME BİTİŞİ ---
         
         st.code(formula_str, language="python")
         
-        use_cols = [dv] + ivs
-        work = df[use_cols].dropna().copy()
-        
+        try:
+            # Model kurulumu
+            model = smf.mnlogit(formula_str, data=work)
+            res = model.fit(disp=0, maxiter=500)
+            
+            # ... (Kodun geri kalanı, st.write, sekmeler vs. aynı kalabilir) ...
         try:
             model = smf.mnlogit(formula_str, data=work)
             res = model.fit(disp=0, maxiter=500)
